@@ -21,8 +21,13 @@ import org.springframework.web.bind.annotation.RequestHeader;
 
 import java.util.Map;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+
 @RestController
 @RequestMapping("/api/auth")
+@Tag(name = "Authentication", description = "Endpoints for user authentication and session permission checking")
 @RequiredArgsConstructor
 @Slf4j
 public class AuthController {
@@ -37,6 +42,9 @@ public class AuthController {
      * Authenticates user, ensures permission bitmaps, returns JWT.
      */
     @PostMapping("/login")
+    @Operation(summary = "Login", description = "Authenticates user and returns a JWT token.")
+    @ApiResponse(responseCode = "200", description = "Successful authentication")
+    @ApiResponse(responseCode = "401", description = "Invalid credentials")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
         var response = authService.login(request);
         return ResponseEntity.ok(response);
@@ -47,6 +55,8 @@ public class AuthController {
      * Removes the session from tracking.
      */
     @PostMapping("/logout")
+    @Operation(summary = "Logout", description = "Removes the user session from Redis.")
+    @ApiResponse(responseCode = "200", description = "Logged out successfully")
     public ResponseEntity<Map<String, String>> logout(
             @RequestHeader("Authorization") String authHeader) {
         var token = extractToken(authHeader);
@@ -61,6 +71,9 @@ public class AuthController {
      * Also validates that the session is still active.
      */
     @PostMapping("/check")
+    @Operation(summary = "Check Permission", description = "Verifies if the session is valid and the user has the requested permission.")
+    @ApiResponse(responseCode = "200", description = "Permission check completed")
+    @ApiResponse(responseCode = "401", description = "Invalid session or missing token")
     public ResponseEntity<PermissionCheckResponse> checkPermission(
             @RequestHeader("Authorization") String authHeader,
             @RequestBody PermissionCheckRequest request) {
@@ -103,6 +116,9 @@ public class AuthController {
      * Returns information about the authenticated user.
      */
     @GetMapping("/me")
+    @Operation(summary = "Get Current User", description = "Returns information about the authenticated user and session validity.")
+    @ApiResponse(responseCode = "200", description = "User information returned")
+    @ApiResponse(responseCode = "401", description = "Invalid token")
     public ResponseEntity<Map<String, Object>> me(
             @RequestHeader("Authorization") String authHeader) {
         var token = extractToken(authHeader);

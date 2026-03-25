@@ -18,6 +18,7 @@ import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages permission bitmaps in Redis with a two-tier caching strategy:
@@ -45,7 +46,7 @@ public class SessionPermissionService {
     private static final String ROLE_PERM_PREFIX = "role:%d:perm";
     private static final String USER_PERM_PREFIX = "user:%d:perm";
     private static final String USER_SESSIONS_KEY = "user:%d:sessions";
-    private static final String TEMP_PREFIX = "tmp:perm:%s";
+    private static final String TEMP_PREFIX = "user:%d:tmp:perm:%s";
 
     private final PermissionRepository permissionRepository;
     private final UserRepository userRepository;
@@ -53,6 +54,21 @@ public class SessionPermissionService {
     private final StringRedisTemplate stringRedisTemplate;
 
     private DefaultRedisScript<Long> computeScript;
+    private final AtomicInteger cachedMaxBitIndex = new AtomicInteger(-1);
+
+    public void invalidateMaxBitIndexCache() {
+        cachedMaxBitIndex.set(-1);
+        log.info("Invalidated maxBitIndex cache");
+    }
+
+    private int getMaxBitIndex() {
+        int current = cachedMaxBitIndex.get();
+        if (current == -1) {
+            current = permissionRepository.findMaxBitIndex().orElse(0);
+            cachedMaxBitIndex.set(current);
+        }
+        return current;
+    }
 
     @PostConstruct
     void init() {
@@ -93,7 +109,8 @@ public class SessionPermissionService {
 
     /**
      * Check if the role bitmap exists in Redis; if not, build it from DB.
-     * The role bitmap has no TTL — it lives until explicitly invalidated.
+     * Uses SET NX as a distributed lock to prevent thundering herd on
+     * concurrent first-login for the same role.
      */
     public void ensureRoleBitmap(Integer roleId) {
         var prefix = String.format(ROLE_PERM_PREFIX, roleId);
@@ -101,7 +118,25 @@ public class SessionPermissionService {
         if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(checkKey))) {
             return;
         }
-        buildRoleBitmap(prefix, roleId);
+
+        // Acquire distributed lock — only one instance builds the bitmap
+        var lockKey = "lock:role_bitmap:" + roleId;
+        var acquired = Boolean.TRUE.equals(
+                stringRedisTemplate.opsForValue()
+                        .setIfAbsent(lockKey, "1", 30, TimeUnit.SECONDS));
+        if (!acquired) {
+            log.debug("Role bitmap build already in progress for roleId={}", roleId);
+            return;
+        }
+        try {
+            // Double-check after acquiring lock
+            if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(checkKey))) {
+                return;
+            }
+            buildRoleBitmap(prefix, roleId);
+        } finally {
+            stringRedisTemplate.delete(lockKey);
+        }
     }
 
     /**
@@ -124,10 +159,11 @@ public class SessionPermissionService {
         log.info("Invalidating role bitmap for roleId={}", roleId);
         var prefix = String.format(ROLE_PERM_PREFIX, roleId);
 
-        permissionRepository.findMaxBitIndex().ifPresent(maxBit -> {
+        var maxBit = getMaxBitIndex();
+        if (maxBit > 0) {
             var totalChunks = bitmapService.getTotalChunks(maxBit);
             bitmapService.deleteAll(prefix, totalChunks);
-        });
+        }
 
         // Invalidate all users with this role
         var userIds = userRepository.findUserIdsByRoleId(roleId);
@@ -179,24 +215,29 @@ public class SessionPermissionService {
             throw new RuntimeException("Failed to fetch user permission overrides", e);
         }
 
-        var maxBitIndexOpt = permissionRepository.findMaxBitIndex();
-        if (maxBitIndexOpt.isEmpty()) {
+        var maxBitIndex = getMaxBitIndex();
+        if (maxBitIndex == 0) {
             log.warn("No permissions defined in system");
             return;
         }
 
-        var maxBitIndex = maxBitIndexOpt.get();
         var totalChunks = bitmapService.getTotalChunks(maxBitIndex);
 
         // Build temporary allow/deny bitmaps
         var uniqueId = UUID.randomUUID().toString().substring(0, 8);
-        var tempAllow = String.format(TEMP_PREFIX, "allow:" + uniqueId);
-        var tempDeny = String.format(TEMP_PREFIX, "deny:" + uniqueId);
+        var tempAllow = String.format(TEMP_PREFIX, userId, "allow:" + uniqueId);
+        var tempDeny = String.format(TEMP_PREFIX, userId, "deny:" + uniqueId);
+        var tempRole = String.format(TEMP_PREFIX, userId, "role:" + uniqueId);
         var rolePrefix = String.format(ROLE_PERM_PREFIX, roleId);
         var userPrefix = String.format(USER_PERM_PREFIX, userId);
 
         bitmapService.buildBitmap(tempAllow, allowBitIndexes);
         bitmapService.buildBitmap(tempDeny, denyBitIndexes);
+        bitmapService.copyBitmap(rolePrefix, tempRole, totalChunks - 1, 60);
+
+        // Safety TTL — temp keys cleaned up even if Lua script fails
+        bitmapService.setTtl(tempAllow, maxBitIndex, 60);
+        bitmapService.setTtl(tempDeny, maxBitIndex, 60);
 
         // Build Lua script arguments
         // KEYS: [roleChunk, allowChunk, denyChunk, resultChunk] × totalChunks
@@ -208,34 +249,38 @@ public class SessionPermissionService {
         args.add(String.valueOf(totalChunks));
 
         IntStream.range(0, totalChunks).forEach(c -> {
-            keys.add(bitmapService.buildChunkKey(rolePrefix, c));
+            keys.add(bitmapService.buildChunkKey(tempRole, c));
             keys.add(bitmapService.buildChunkKey(tempAllow, c));
             keys.add(bitmapService.buildChunkKey(tempDeny, c));
             keys.add(bitmapService.buildChunkKey(userPrefix, c));
 
-            args.add("tmp:or:" + uniqueId + ":" + c);
-            args.add("tmp:not:" + uniqueId + ":" + c);
+            args.add(String.format(TEMP_PREFIX, userId, "or:" + uniqueId + ":" + c));
+            args.add(String.format(TEMP_PREFIX, userId, "not:" + uniqueId + ":" + c));
         });
 
-        stringRedisTemplate.execute(computeScript, keys, args.toArray());
-
-
+        try {
+            stringRedisTemplate.execute(computeScript, keys, args.toArray());
+        } finally {
+            // Clean up temp keys regardless of success/failure
+            bitmapService.deleteAll(tempRole, totalChunks - 1);
+            bitmapService.deleteAll(tempAllow, totalChunks - 1);
+            bitmapService.deleteAll(tempDeny, totalChunks - 1);
+        }
 
         log.info("User bitmap computed: userId={}, chunks={}, TTL={}s", userId, totalChunks, ttlSeconds);
     }
 
     /**
-     * Extend the TTL on all user bitmap chunk keys and meta key.
+     * Extend the TTL on all user bitmap chunk keys.
+     * Uses pipelined EXPIRE via BitmapService.setTtl().
      */
     private void extendUserBitmapTtl(Long userId, long ttlSeconds) {
         var prefix = String.format(USER_PERM_PREFIX, userId);
 
-        permissionRepository.findMaxBitIndex().ifPresent(maxBit -> {
-            var totalChunks = bitmapService.getTotalChunks(maxBit);
-            IntStream.range(0, totalChunks)
-                    .mapToObj(c -> bitmapService.buildChunkKey(prefix, c))
-                    .forEach(key -> stringRedisTemplate.expire(key, ttlSeconds, TimeUnit.SECONDS));
-        });
+        var maxBit = getMaxBitIndex();
+        if (maxBit > 0) {
+            bitmapService.setTtl(prefix, maxBit, ttlSeconds);
+        }
     }
 
     /**
@@ -246,10 +291,11 @@ public class SessionPermissionService {
         log.info("Invalidating user bitmap for userId={}", userId);
         var prefix = String.format(USER_PERM_PREFIX, userId);
 
-        permissionRepository.findMaxBitIndex().ifPresent(maxBit -> {
+        var maxBit = getMaxBitIndex();
+        if (maxBit > 0) {
             var totalChunks = bitmapService.getTotalChunks(maxBit);
             bitmapService.deleteAll(prefix, totalChunks);
-        });
+        }
 
         // Invalidate all active sessions for this user
         invalidateAllSessions(userId);

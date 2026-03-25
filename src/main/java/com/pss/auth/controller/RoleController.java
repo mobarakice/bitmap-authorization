@@ -20,8 +20,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import java.util.List;
 import java.util.Map;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 @RestController
 @RequestMapping("/api/admin/roles")
+@Tag(name = "Roles Admin", description = "Endpoints for managing roles and role permissions")
 @RequiredArgsConstructor
 @Slf4j
 public class RoleController {
@@ -36,6 +40,7 @@ public class RoleController {
      * List all roles.
      */
     @GetMapping
+    @Operation(summary = "List Roles", description = "Retrieve a list of all roles in the system.")
     public ResponseEntity<List<Role>> listRoles() {
         return ResponseEntity.ok(roleRepository.findAll());
     }
@@ -45,6 +50,7 @@ public class RoleController {
      * Get role by ID.
      */
     @GetMapping("/{id}")
+    @Operation(summary = "Get Role by ID", description = "Find a role by its primary key ID.")
     public ResponseEntity<Role> getRole(@PathVariable Integer id) {
         return roleRepository.findById(id)
                 .map(ResponseEntity::ok)
@@ -56,6 +62,7 @@ public class RoleController {
      * Get all permission bit_indexes assigned to a role.
      */
     @GetMapping("/{id}/permissions")
+    @Operation(summary = "Get Role Permissions", description = "Get all permission bit_indexes currently granted to a role.")
     public ResponseEntity<Map<String, Object>> getRolePermissions(@PathVariable Integer id) {
         var bitIndexes = permissionRepository.findBitIndexesByRoleId(id);
         return ResponseEntity.ok(Map.of(
@@ -71,6 +78,7 @@ public class RoleController {
      * Body: { "permissionIds": [1, 2, 3, ...] }
      */
     @PutMapping("/{id}/permissions")
+    @Operation(summary = "Update Role Permissions", description = "Replace all permissions for a given role ID. This triggers a permission cache invalidation.")
     @Transactional
     public ResponseEntity<Map<String, Object>> updateRolePermissions(
             @PathVariable Integer id,

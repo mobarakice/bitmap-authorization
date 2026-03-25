@@ -2,9 +2,12 @@ package com.pss.auth.service;
 
 import com.pss.auth.dto.LoginRequest;
 import com.pss.auth.dto.LoginResponse;
+import com.pss.auth.exception.AccountDisabledException;
+import com.pss.auth.exception.InvalidCredentialsException;
 import com.pss.auth.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 /**
@@ -29,6 +32,7 @@ public class AuthService {
     private final UserRepository userRepository;
     private final JwtService jwtService;
     private final SessionPermissionService sessionPermissionService;
+    private final PasswordEncoder passwordEncoder;
 
     /**
      * Authenticate user and ensure permission bitmaps are ready.
@@ -36,15 +40,15 @@ public class AuthService {
     public LoginResponse login(LoginRequest request) {
         // 1. Find user
         var user = userRepository.findByUsername(request.username())
-                .orElseThrow(() -> new RuntimeException("Invalid credentials"));
+                .orElseThrow(InvalidCredentialsException::new);
 
         if (!user.getEnabled()) {
-            throw new RuntimeException("Account is disabled");
+            throw new AccountDisabledException();
         }
 
-        // 2. Validate password (demo: accept "password123" for all seeded users)
-        if (!"password123".equals(request.password())) {
-            throw new RuntimeException("Invalid credentials");
+        // 2. Validate password
+        if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+            throw new InvalidCredentialsException();
         }
 
         // 3. Generate session

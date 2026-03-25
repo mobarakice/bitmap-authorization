@@ -5,7 +5,7 @@ A high-performance, stateless authorization service designed for O(1) runtime pe
 This project aims to completely remove database calls from the authorization hot path by pre-computing a user's permissions during login using Redis bitwise operations (`OR`, `AND NOT`) and caching them as chunked binaries. These binaries are then accessed instantly by the API Gateway (via an APISIX Lua plugin) to validate requests.
 
 ## Architecture Highlights
-- **Java 21 / Spring Boot 3+**: Utilizes virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`), strict pattern matching, Java records, and the Stream API.
+- **Java 25 / Spring Boot 4.0.4**: Utilizes virtual threads (`Executors.newVirtualThreadPerTaskExecutor()`), strict pattern matching, Java records, and the Stream API.
 - **Jedis**: Engineered specifically with Jedis over Lettuce for Redis connectivity.
 - **O(1) Authorization**: Permissions mapped to unique integer bit indexes. 
 - **Chunked Bitmap Strategy**: Bitmaps are generated in chunks of 1024 bits (128 bytes) each.
@@ -13,7 +13,7 @@ This project aims to completely remove database calls from the authorization hot
 - **Stateless Flow**: Spring Security is configured uniformly as stateless (no CSRF, no session creation).
 
 ## Prerequisites
-- **Java 21 or Java 23** (Gradle 8.12 runtime)
+- **Java 25** (Gradle 8.12 runtime)
 - **Docker** & **Docker Compose**
 - **PostgreSQL**
 - **Redis 7+**
@@ -28,7 +28,7 @@ docker compose up -d postgres redis
 *(By default, `application.yaml` points to `localhost:5432` for Postgres and `localhost:6379` for Redis).*
 
 ### 2. Build and Run
-With `JAVA_HOME` pointing to Java 21 or 23, launch the Spring Boot application:
+With `JAVA_HOME` pointing to Java 25, launch the Spring Boot application:
 ```bash
 ./gradlew bootRun
 ```

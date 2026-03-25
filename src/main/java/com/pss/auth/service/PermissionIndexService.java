@@ -2,9 +2,10 @@ package com.pss.auth.service;
 
 import com.pss.auth.domain.entity.Permission;
 import com.pss.auth.repository.PermissionRepository;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -33,30 +34,38 @@ public class PermissionIndexService {
 
     /**
      * On startup, sync all permissions from PostgreSQL → Redis hash.
+     * Handles gracefully if the database schema is not yet ready.
      */
-    @PostConstruct
+    @EventListener(ApplicationReadyEvent.class)
     public void syncPermissionIndex() {
         log.info("Syncing permission index to Redis...");
-        var permissions = permissionRepository.findAll();
 
-        if (permissions.isEmpty()) {
-            log.warn("No permissions found in database.");
-            return;
+        try {
+            var permissions = permissionRepository.findAll();
+
+            if (permissions.isEmpty()) {
+                log.warn("No permissions found in database.");
+                return;
+            }
+
+            var indexMap = permissions.stream()
+                    .collect(java.util.stream.Collectors.toMap(
+                            Permission::toPermissionKey,
+                            p -> String.valueOf(p.getBitIndex()),
+                            (existing, replacement) -> existing,
+                            HashMap::new
+                    ));
+
+            // Atomic replace: write to temp key, then RENAME
+            var tmpKey = PERM_INDEX_KEY + ":tmp";
+            stringRedisTemplate.delete(tmpKey);
+            stringRedisTemplate.opsForHash().putAll(tmpKey, indexMap);
+            stringRedisTemplate.rename(tmpKey, PERM_INDEX_KEY);
+
+            log.info("Synced {} permissions to Redis perm:index", indexMap.size());
+        } catch (Exception e) {
+            log.warn("Failed to sync permission index (schema may not be ready yet): {}", e.getMessage());
         }
-
-        var indexMap = permissions.stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        Permission::toPermissionKey,
-                        p -> String.valueOf(p.getBitIndex()),
-                        (existing, replacement) -> existing,
-                        HashMap::new
-                ));
-
-        // Atomic replace: delete old, set new
-        stringRedisTemplate.delete(PERM_INDEX_KEY);
-        stringRedisTemplate.opsForHash().putAll(PERM_INDEX_KEY, indexMap);
-
-        log.info("Synced {} permissions to Redis perm:index", indexMap.size());
     }
 
     /**
@@ -96,6 +105,6 @@ public class PermissionIndexService {
      */
     public long getPermissionCount() {
         var size = stringRedisTemplate.opsForHash().size(PERM_INDEX_KEY);
-        return size == null ? size : 0;
+        return size != null ? size : 0L;
     }
 }

@@ -7,6 +7,11 @@ apisix:
     ip: 0.0.0.0
     port: 9180
 
+nginx_config:
+  http:
+    custom_lua_shared_dict:
+      perm_cache: 10m
+
 deployment:
   role: data_plane
   role_data_plane:
@@ -16,6 +21,7 @@ extra_lua_path: "/usr/local/apisix/apisix/plugins/?.lua"
 
 plugins:
   - bitmap-auth
+  - limit-count
 
 routes:
   # ---- Public routes (bypass auth) ----
@@ -24,7 +30,14 @@ routes:
       type: roundrobin
       nodes:
         "host.docker.internal:8080": 1
-    plugins: {}
+    plugins:
+      limit-count:
+        count: 10
+        time_window: 60
+        key_type: var
+        key: remote_addr
+        rejected_code: 429
+        rejected_msg: "Too many login attempts. Try again later."
 
   # ---- Protected routes ----
   - uri: /api/*
@@ -36,7 +49,7 @@ routes:
       bitmap-auth:
         redis_host: "auth-redis"
         redis_port: 6379
-        jwt_secret: "c2VjdXJlLWp3dC1zZWNyZXQta2V5LWZvci1yZWRpcy1iYXNlLWF1dGgtc2VydmljZS0yMDI2"
+        jwt_secret: "$ENV://JWT_SECRET"
         chunk_size: 1024
         perm_cache_ttl: 60
         bypass_paths:

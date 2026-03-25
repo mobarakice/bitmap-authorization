@@ -1,16 +1,24 @@
 package com.pss.auth.config;
 
+import com.pss.auth.service.CacheInvalidationListener;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.jedis.JedisClientConfiguration;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.listener.ChannelTopic;
+import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import redis.clients.jedis.JedisPoolConfig;
 
 @Configuration
+@EnableConfigurationProperties({RedisConfig.RedisProperties.class, RedisConfig.JedisPoolProperties.class})
 public class RedisConfig {
 
     @ConfigurationProperties(prefix = "app.redis")
@@ -21,8 +29,17 @@ public class RedisConfig {
         }
     }
 
+    @ConfigurationProperties(prefix = "app.redis.jedis.pool")
+    public record JedisPoolProperties(int maxActive, int maxIdle, int minIdle) {
+        public JedisPoolProperties {
+            if (maxActive <= 0) maxActive = 16;
+            if (maxIdle <= 0) maxIdle = 8;
+            if (minIdle <= 0) minIdle = 4;
+        }
+    }
+
     @Bean
-    public JedisConnectionFactory redisConnectionFactory(RedisProperties properties) {
+    public JedisConnectionFactory redisConnectionFactory(RedisProperties properties, JedisPoolProperties poolProps) {
         var config = new RedisStandaloneConfiguration(properties.host(), properties.port());
         if (properties.username() != null && !properties.username().isBlank()) {
             config.setUsername(properties.username());
@@ -31,14 +48,23 @@ public class RedisConfig {
             config.setPassword(properties.password());
         }
 
+        // Configure Jedis connection pool
+        var poolConfig = new JedisPoolConfig();
+        poolConfig.setMaxTotal(poolProps.maxActive());
+        poolConfig.setMaxIdle(poolProps.maxIdle());
+        poolConfig.setMinIdle(poolProps.minIdle());
+        poolConfig.setTestOnBorrow(true);
+        poolConfig.setTestWhileIdle(true);
+
+        var clientConfigBuilder = JedisClientConfiguration.builder()
+                .usePooling()
+                .poolConfig(poolConfig);
+
         if (properties.ssl()) {
-            var clientConfig = org.springframework.data.redis.connection.jedis.JedisClientConfiguration.builder()
-                    .useSsl()
-                    .build();
-            return new JedisConnectionFactory(config, clientConfig);
+            clientConfigBuilder.and().useSsl();
         }
 
-        return new JedisConnectionFactory(config);
+        return new JedisConnectionFactory(config, clientConfigBuilder.build());
     }
 
     @Bean
@@ -56,5 +82,20 @@ public class RedisConfig {
     @Bean
     public StringRedisTemplate stringRedisTemplate(JedisConnectionFactory connectionFactory) {
         return new StringRedisTemplate(connectionFactory);
+    }
+
+    // =========================================================================
+    // Pub/Sub Listener for distributed cache invalidation
+    // =========================================================================
+
+    @Bean
+    public RedisMessageListenerContainer redisMessageListenerContainer(
+            JedisConnectionFactory connectionFactory,
+            CacheInvalidationListener listener,
+            @Value("${app.cache-invalidation.channel:auth:invalidation}") String channel) {
+        var container = new RedisMessageListenerContainer();
+        container.setConnectionFactory(connectionFactory);
+        container.addMessageListener(listener, new ChannelTopic(channel));
+        return container;
     }
 }

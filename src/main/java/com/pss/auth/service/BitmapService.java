@@ -3,15 +3,14 @@ package com.pss.auth.service;
 import com.pss.auth.config.BitmapConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataAccessException;
-import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import redis.clients.jedis.Connection;
 
+import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 /**
@@ -97,21 +96,38 @@ public class BitmapService {
 
     /**
      * Set TTL on all chunk keys for a given prefix.
+     * Uses pipelining to send all EXPIRE commands in a single round-trip.
      */
     public void setTtl(String keyPrefix, int maxBitIndex, long ttlSeconds) {
         var maxChunk = getChunkId(maxBitIndex);
-        IntStream.rangeClosed(0, maxChunk)
+        var keys = IntStream.rangeClosed(0, maxChunk)
                 .mapToObj(c -> buildChunkKey(keyPrefix, c))
-                .forEach(key -> redisTemplate.expire(key, ttlSeconds, TimeUnit.SECONDS));
+                .toList();
+        redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
+            keys.forEach(key -> connection.keyCommands()
+                    .expire(key.getBytes(), ttlSeconds));
+            return null;
+        });
+        log.debug("Set TTL on {} chunks for {} (pipelined)", keys.size(), keyPrefix);
     }
 
     /**
      * Delete all chunk keys for a given prefix.
+     * Uses SCAN to find all matching chunks regardless of maxBitIndex to prevent orphans.
      */
     public void deleteAll(String keyPrefix, int maxChunkId) {
-        IntStream.rangeClosed(0, maxChunkId)
-                .mapToObj(c -> buildChunkKey(keyPrefix, c))
-                .forEach(redisTemplate::delete);
+        var pattern = keyPrefix + ":*";
+        var keysToDelete = new java.util.ArrayList<String>();
+        try (var cursor = redisTemplate.getConnectionFactory().getConnection().keyCommands()
+                .scan(org.springframework.data.redis.core.ScanOptions.scanOptions().match(pattern).count(100).build())) {
+            while (cursor.hasNext()) {
+                keysToDelete.add(new String(cursor.next()));
+            }
+        }
+        if (!keysToDelete.isEmpty()) {
+            redisTemplate.delete(keysToDelete);
+            log.debug("Deleted {} chunks for {} via SCAN", keysToDelete.size(), keyPrefix);
+        }
     }
 
     /**
@@ -126,5 +142,29 @@ public class BitmapService {
      */
     public int getChunkSize() {
         return bitmapConfig.chunkSize();
+    }
+
+    /**
+     * Copy all chunks from a source prefix to a target prefix.
+     * Useful for moving bitmaps across Redis Cluster hash tag boundaries.
+     */
+    public void copyBitmap(String sourcePrefix, String targetPrefix, int maxChunkId, int ttlSeconds) {
+        var sourceKeys = IntStream.rangeClosed(0, maxChunkId)
+                .mapToObj(c -> buildChunkKey(sourcePrefix, c))
+                .toList();
+        var bytesList = redisTemplate.opsForValue().multiGet(sourceKeys);
+        if (bytesList != null) {
+            Map<String, byte[]> targetMap = new HashMap<>();
+            for (int i = 0; i <= maxChunkId; i++) {
+                var bytes = bytesList.get(i);
+                if (bytes != null) {
+                    targetMap.put(buildChunkKey(targetPrefix, i), bytes);
+                }
+            }
+            if (!targetMap.isEmpty()) {
+                redisTemplate.opsForValue().multiSet(targetMap);
+                setTtl(targetPrefix, maxChunkId * bitmapConfig.chunkSize(), ttlSeconds);
+            }
+        }
     }
 }

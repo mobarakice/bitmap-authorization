@@ -15,13 +15,6 @@
 local core       = require("apisix.core")
 local redis_new  = require("resty.redis")
 local jwt        = require("resty.jwt")
-local lrucache   = require("resty.lrucache")
-
--- Local LRU cache for permission index (avoids Redis HGET on every request)
-local perm_cache, err = lrucache.new(4096)
-if not perm_cache then
-    core.log.error("Failed to create LRU cache: ", err)
-end
 
 local plugin_name = "bitmap-auth"
 
@@ -141,18 +134,18 @@ end
 -- Check if path should bypass authorization
 local function is_bypass_path(path, bypass_paths)
     for _, bp in ipairs(bypass_paths) do
-        if path == bp or path:find(bp, 1, true) == 1 then
+        if path == bp or path:sub(1, #bp + 1) == bp .. "/" then
             return true
         end
     end
     return false
 end
 
--- Get permission index from LRU cache or Redis
+-- Get permission index from shared cache or Redis
 local function get_permission_index(red, conf, perm_key)
-    -- Check LRU cache first
-    if perm_cache then
-        local cached = perm_cache:get(perm_key)
+    local shared_cache = ngx.shared.perm_cache
+    if shared_cache then
+        local cached = shared_cache:get(perm_key)
         if cached then
             return cached
         end
@@ -166,9 +159,9 @@ local function get_permission_index(red, conf, perm_key)
 
     local perm_id = tonumber(index)
 
-    -- Store in LRU cache
-    if perm_cache and perm_id then
-        perm_cache:set(perm_key, perm_id, conf.perm_cache_ttl)
+    -- Store in shared cache
+    if shared_cache and perm_id then
+        shared_cache:set(perm_key, perm_id, conf.perm_cache_ttl)
     end
 
     return perm_id
@@ -236,7 +229,7 @@ function _M.rewrite(conf, ctx)
     local offset = perm_id % chunk_size
 
     -- 7. GETBIT - the O(1) authorization check
-    local bitmap_key = "user:" .. uid .. ":perm:" .. chunk
+    local bitmap_key = "{user:" .. uid .. "}:perm:" .. chunk
     local bit_val, bit_err = red:getbit(bitmap_key, offset)
 
     put_redis(red, conf)

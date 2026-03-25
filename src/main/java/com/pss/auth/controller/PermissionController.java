@@ -16,8 +16,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import java.util.List;
 import java.util.Map;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 @RestController
 @RequestMapping("/api/admin/permissions")
+@Tag(name = "Permissions Admin", description = "Endpoints for managing permissions")
 @RequiredArgsConstructor
 @Slf4j
 public class PermissionController {
@@ -31,6 +35,7 @@ public class PermissionController {
      * List all permissions with their bit_index assignments.
      */
     @GetMapping
+    @Operation(summary = "List Permissions", description = "Retrieve all permissions with their assigned bit indexes.")
     public ResponseEntity<List<Permission>> listPermissions() {
         return ResponseEntity.ok(permissionRepository.findAll());
     }
@@ -40,6 +45,7 @@ public class PermissionController {
      * Create a new permission with auto-assigned bit_index.
      */
     @PostMapping
+    @Operation(summary = "Create Permission", description = "Create a new permission and automatically assign it a bit index.")
     public ResponseEntity<Permission> createPermission(@RequestBody Permission permission) {
         // Auto-assign next bit_index
         var nextIndex = permissionRepository.findMaxBitIndex().orElse(-1) + 1;
@@ -61,6 +67,7 @@ public class PermissionController {
      * Force sync all permissions from DB to Redis perm:index.
      */
     @PostMapping("/sync")
+    @Operation(summary = "Sync Permission Index", description = "Force sync all permissions from the database to the Redis perm:index hash.")
     public ResponseEntity<Map<String, Object>> syncPermissions() {
         permissionIndexService.syncPermissionIndex();
         return ResponseEntity.ok(Map.of(
@@ -74,6 +81,7 @@ public class PermissionController {
      * Permission statistics.
      */
     @GetMapping("/stats")
+    @Operation(summary = "Permission Statistics", description = "Get statistics about the permissions, like total count and max bit index.")
     public ResponseEntity<Map<String, Object>> stats() {
         return ResponseEntity.ok(Map.of(
                 "totalPermissions", permissionRepository.count(),
