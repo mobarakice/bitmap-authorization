@@ -1,0 +1,46 @@
+# APISIX standalone configuration
+# This is used when APISIX_STAND_ALONE=true
+apisix:
+  node_listen: 9080
+  enable_admin: true
+  admin_listen:
+    ip: 0.0.0.0
+    port: 9180
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+extra_lua_path: "/usr/local/apisix/apisix/plugins/?.lua"
+
+plugins:
+  - bitmap-auth
+
+routes:
+  # ---- Public routes (bypass auth) ----
+  - uri: /api/auth/login
+    upstream:
+      type: roundrobin
+      nodes:
+        "host.docker.internal:8080": 1
+    plugins: {}
+
+  # ---- Protected routes ----
+  - uri: /api/*
+    upstream:
+      type: roundrobin
+      nodes:
+        "host.docker.internal:8080": 1
+    plugins:
+      bitmap-auth:
+        redis_host: "auth-redis"
+        redis_port: 6379
+        jwt_secret: "c2VjdXJlLWp3dC1zZWNyZXQta2V5LWZvci1yZWRpcy1iYXNlLWF1dGgtc2VydmljZS0yMDI2"
+        chunk_size: 1024
+        perm_cache_ttl: 60
+        bypass_paths:
+          - "/api/auth/login"
+          - "/api/auth/logout"
+
+#END

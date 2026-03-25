@@ -1,0 +1,24 @@
+services:
+  apisix:
+    image: apache/apisix:3.14.0-debian
+    container_name: auth-apisix
+    ports:
+      - "9080:9080"
+      - "9443:9443"
+      - "9180:9180"
+      - "9000:9000"
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml
+      - ./apisix/plugins/bitmap-auth.lua:/usr/local/apisix/apisix/plugins/bitmap-auth.lua
+    environment:
+      APISIX_STAND_ALONE: "true"
+
+  apisix-dashboard:
+    image: apache/apisix-dashboard:3.0.1-alpine
+    container_name: auth-apisix-dashboard
+    ports:
+      - "9000:9000"
+    environment:
+      - APISIX_DASHBOARD_ETCD_ENDPOINTS= # standalone doesn't use etcd, but we need dashboard to start
+    volumes:
+      - ./apisix/dashboard_conf.yaml:/usr/local/apisix-dashboard/conf/conf.yaml

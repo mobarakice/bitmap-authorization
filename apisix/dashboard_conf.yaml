@@ -1,0 +1,11 @@
+conf:
+  listen:
+    # 0.0.0.0 will listen on all IPv4 addresses
+    host: 0.0.0.0     
+    port: 9000
+    
+authentication:
+  secret: edd1c9f034335f136f87ad84b625c8f1           # Keep it same as admin_key
+  users:
+    - username: admin
+      password: admin
