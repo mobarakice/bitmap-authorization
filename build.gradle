@@ -57,4 +57,14 @@ dependencies {
     // Metrics
     implementation 'io.micrometer:micrometer-registry-prometheus'
 
+    // Testing
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter:1.19.7'
+    testImplementation 'org.testcontainers:postgresql:1.19.7'
+    testImplementation 'com.redis.testcontainers:testcontainers-redis-junit:1.6.4'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }

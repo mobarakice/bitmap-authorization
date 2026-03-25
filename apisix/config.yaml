@@ -36,7 +36,7 @@ routes:
       bitmap-auth:
         redis_host: "auth-redis"
         redis_port: 6379
-        jwt_secret: "c2VjdXJlLWp3dC1zZWNyZXQta2V5LWZvci1yZWRpcy1iYXNlLWF1dGgtc2VydmljZS0yMDI2"
+        jwt_secret: "$ENV://JWT_SECRET"
         chunk_size: 1024
         perm_cache_ttl: 60
         bypass_paths:

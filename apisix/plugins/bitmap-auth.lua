@@ -141,7 +141,7 @@ end
 -- Check if path should bypass authorization
 local function is_bypass_path(path, bypass_paths)
     for _, bp in ipairs(bypass_paths) do
-        if path == bp or path:find(bp, 1, true) == 1 then
+        if path == bp or path:sub(1, #bp + 1) == bp .. "/" then
             return true
         end
     end
