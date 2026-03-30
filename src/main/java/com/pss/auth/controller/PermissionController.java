@@ -4,6 +4,7 @@ import com.pss.auth.domain.entity.Permission;
 import com.pss.auth.repository.PermissionRepository;
 import com.pss.auth.service.CacheInvalidationService;
 import com.pss.auth.service.PermissionIndexService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -82,7 +83,9 @@ public class PermissionController {
      */
     @GetMapping("/stats")
     @Operation(summary = "Permission Statistics", description = "Get statistics about the permissions, like total count and max bit index.")
-    public ResponseEntity<Map<String, Object>> stats() {
+    public ResponseEntity<Map<String, Object>> stats(HttpServletRequest request) {
+        log.info("X-User-Id='{}' X-Session-Id={})",
+                request.getHeader("X-User-Id"), request.getHeader("X-Session-Id"));
         return ResponseEntity.ok(Map.of(
                 "totalPermissions", permissionRepository.count(),
                 "maxBitIndex", permissionRepository.findMaxBitIndex().orElse(0),

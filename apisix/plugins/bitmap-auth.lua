@@ -4,17 +4,33 @@
 --
 -- Flow:
 --   1. Extract JWT from Authorization header
---   2. Decode JWT to extract user_id (uid) and session_id (sid)
+--   2. Decode JWT to extract uid, sid, roleId
 --   3. Build permission key: "{METHOD}:{normalized_path}"
---   4. HGET perm:index key → permission_id
+--   4. HGET perm:index key → permission_id  (LRU-cached)
 --   5. Compute: chunk = floor(permission_id / chunk_size), offset = permission_id % chunk_size
---   6. GETBIT user:{uid}:session:{sid}:perm:{chunk} offset
---   7. Return 403 if 0, pass-through if 1
+--   6. EVAL check_permission script: (role OR allow) AND (NOT deny)  — single Redis round trip
+--   7. Return 403 if denied, pass-through if allowed
 --
 
 local core       = require("apisix.core")
 local redis_new  = require("resty.redis")
 local jwt        = require("resty.jwt")
+
+-- Canonical source: src/main/resources/scripts/check_permission.lua
+-- Inlined here because APISIX Lua cannot require files from the classpath at runtime.
+-- Changes to the logic must be kept in sync with that file.
+local CHECK_PERM_SCRIPT = [[
+    local roleKey  = KEYS[1]
+    local allowKey = KEYS[2]
+    local denyKey  = KEYS[3]
+    local offset   = tonumber(ARGV[1])
+    local denyBit = redis.call('GETBIT', denyKey, offset)
+    if denyBit == 1 then return 0 end
+    local roleBit  = redis.call('GETBIT', roleKey, offset)
+    local allowBit = redis.call('GETBIT', allowKey, offset)
+    if roleBit == 1 or allowBit == 1 then return 1 end
+    return 0
+]]
 
 local plugin_name = "bitmap-auth"
 
@@ -228,42 +244,34 @@ function _M.rewrite(conf, ctx)
     local chunk  = math.floor(perm_id / chunk_size)
     local offset = perm_id % chunk_size
 
-    -- 7. Check permission: (role OR allow) AND (NOT deny)
+    -- 7. Check permission: (role OR allow) AND (NOT deny) — single Redis round trip via EVAL
     local roleKey  = "{user:" .. uid .. "}:role:" .. roleId .. ":perm:" .. chunk
     local allowKey = "{user:" .. uid .. "}:allow:" .. chunk
     local denyKey  = "{user:" .. uid .. "}:deny:" .. chunk
 
-    -- Check deny first (fast rejection)
-    local denyBit, deny_err = red:getbit(denyKey, offset)
-    if denyBit == 1 then
-        put_redis(red, conf)
-        core.log.info("DENIED (deny list): user=", uid, " perm=", perm_key)
-        return 403, { message = "Forbidden" }
-    end
-
-    -- Check role or allow
-    local roleBit, role_err = red:getbit(roleKey, offset)
-    local allowBit, allow_err = red:getbit(allowKey, offset)
+    local result, eval_err = red:eval(
+        CHECK_PERM_SCRIPT, 3,
+        roleKey, allowKey, denyKey,
+        tostring(offset)
+    )
 
     put_redis(red, conf)
 
-    if not roleBit or not allowBit then
-        core.log.error("GETBIT failed")
+    if eval_err then
+        core.log.error("EVAL check_permission failed: ", eval_err)
         return 500, { message = "Authorization check failed" }
     end
 
-    -- 8. Authorize: (role OR allow) AND (NOT deny)
-    if roleBit == 1 or allowBit == 1 then
-        -- ALLOWED
-        core.request.set_header(ctx, "X-User-Id", uid)
+    -- 8. Authorize
+    if result == 1 then
+        core.request.set_header(ctx, "X-User-Id",    uid)
         core.request.set_header(ctx, "X-Session-Id", sid)
-        core.request.set_header(ctx, "X-Perm-Key", perm_key)
+        core.request.set_header(ctx, "X-Perm-Key",   perm_key)
         return
     end
 
-    -- DENIED
     core.log.info("DENIED: user=", uid, " perm=", perm_key,
-                   " index=", perm_id, " chunk=", chunk, " offset=", offset)
+                  " index=", perm_id, " chunk=", chunk, " offset=", offset)
     return 403, { message = "Forbidden" }
 end
 

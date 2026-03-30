@@ -12,14 +12,14 @@ import org.springframework.stereotype.Service;
 
 /**
  * Authentication service orchestrating login and logout flows.
- *
+ * <p>
  * Login flow:
  * 1. Validate credentials
  * 2. Generate session ID and JWT token
  * 3. Ensure role bitmap exists (lazy), ensure user bitmap exists (lazy/extend TTL)
  * 4. Track session in Redis
  * 5. Return JWT to client
- *
+ * <p>
  * Logout flow:
  * 1. Extract userId/sessionId from token
  * 2. Remove session from tracking set
@@ -57,9 +57,7 @@ public class AuthService {
         var ttl = jwtService.getExpirySeconds();
 
         // 4. Ensure bitmaps + track session (the core operation)
-        sessionPermissionService.onLogin(
-                user.getId(), sessionId, user.getRole().getId(), ttl
-        );
+        sessionPermissionService.onLogin(user.getId(), sessionId, user.getRole().getId(), token, ttl);
 
         log.info("User '{}' logged in successfully (userId={}, sessionId={})",
                 user.getUsername(), user.getId(), sessionId);

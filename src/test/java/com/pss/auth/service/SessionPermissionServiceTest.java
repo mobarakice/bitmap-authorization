@@ -179,7 +179,7 @@ class SessionPermissionServiceTest {
                 .thenReturn(List.of(4, 5));
 
         // When
-        service.onLogin(userId, sessionId, roleId, ttlSeconds);
+        service.onLogin(userId, sessionId, roleId,"", ttlSeconds);
 
         // Then
         verify(bitmapService).buildBitmap("user:1:allow", List.of(1, 2, 3));
@@ -202,7 +202,7 @@ class SessionPermissionServiceTest {
         when(stringRedisTemplate.hasKey("user:1:deny:0")).thenReturn(true);
 
         // When
-        service.onLogin(userId, sessionId, roleId, ttlSeconds);
+        service.onLogin(userId, sessionId, roleId, "",ttlSeconds);
 
         // Then
         verify(bitmapService, never()).buildBitmap(anyString(), anyList());

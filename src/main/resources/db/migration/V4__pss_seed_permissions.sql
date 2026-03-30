@@ -10,10 +10,7 @@
 -- =============================================================================
 
 -- Clear existing seed data (V2, V3)
-TRUNCATE TABLE user_deny_permissions, user_allow_permissions, role_permissions CASCADE;
-DELETE FROM users;
-DELETE FROM permissions;
-DELETE FROM roles;
+TRUNCATE TABLE users, permissions, roles, user_deny_permissions, user_allow_permissions, role_permissions CASCADE;
 
 -- Reset sequences
 ALTER SEQUENCE permissions_id_seq RESTART WITH 1;

@@ -159,7 +159,7 @@ SELECT setval('roles_id_seq', 100);
 INSERT INTO users (username, password_hash, role_id, enabled)
 SELECT
     'user' || LPAD(n::TEXT, 3, '0') AS username,
-    '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy' AS password_hash,
+    '$2a$10$WOJ/ZA3nkeYsR6i.1FPc5OcXfBVjihlgXnlwGWnp3If5XOGrmch8W' AS password_hash,
     CASE
         -- 5 executives (roles 1-5)
         WHEN n <= 5  THEN n
@@ -411,31 +411,219 @@ INSERT INTO role_permissions (role_id, permission_id)
 SELECT 100, p.id FROM permissions p WHERE p.action = 'GET';
 
 -- =========================================================================
--- 4. USER-LEVEL OVERRIDES (sample allow/deny)
+-- 4. USER-LEVEL OVERRIDES
+-- =========================================================================
+-- 10 users with BOTH allow AND deny permissions
+-- 5 users with ONLY allow permissions
+-- 5 users with ONLY deny permissions
 -- =========================================================================
 
--- user019 (MGR_FLIGHT_SCHEDULE) gets extra inventory read access
+-- ---------------------------------------------------------------------------
+-- 10 USERS WITH BOTH ALLOW AND DENY
+-- ---------------------------------------------------------------------------
+
+-- user019 (MGR_FLIGHT_SCHEDULE): allow inventory read, deny pricing write
 INSERT INTO user_allow_permissions (user_id, permission_id)
 SELECT u.id, p.id FROM users u, permissions p
 WHERE u.username = 'user019'
-  AND p.bit_index BETWEEN 15840 AND 16839
+  AND p.bit_index BETWEEN 15840 AND 16339
   AND p.action = 'GET';
 
--- user023 (MGR_RESERVATIONS) denied payment access bit_index range
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user019'
+  AND p.bit_index BETWEEN 35640 AND 36139
+  AND p.action IN ('POST', 'PUT');
+
+-- user023 (MGR_RESERVATIONS): allow sales read, deny payment write
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user023'
+  AND p.bit_index BETWEEN 39600 AND 40099
+  AND p.action = 'GET';
+
 INSERT INTO user_deny_permissions (user_id, permission_id)
 SELECT u.id, p.id FROM users u, permissions p
 WHERE u.username = 'user023'
-  AND p.bit_index BETWEEN 23760 AND 24759
+  AND p.bit_index BETWEEN 23760 AND 24259
+  AND p.action IN ('POST', 'PUT', 'PATCH');
+
+-- user025 (MGR_AIRPORT_OPS): allow gds read, deny pnr delete
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user025'
+  AND p.bit_index BETWEEN 11880 AND 12379
+  AND p.action = 'GET';
+
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user025'
+  AND p.bit_index BETWEEN 31680 AND 32179
+  AND p.action = 'DELETE';
+
+-- user031 (MGR_PRICING_DOMESTIC): allow notifications write, deny sales delete
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user031'
+  AND p.bit_index BETWEEN 19800 AND 20299
   AND p.action IN ('POST', 'PUT');
 
--- user063 (RESERVATION_AGENT) gets extra SSR read access
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user031'
+  AND p.bit_index BETWEEN 39600 AND 40099
+  AND p.action = 'DELETE';
+
+-- user037 (MGR_PAYMENT_OPS): allow ssr read, deny payment delete
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user037'
+  AND p.bit_index BETWEEN 47520 AND 48019
+  AND p.action = 'GET';
+
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user037'
+  AND p.bit_index BETWEEN 23760 AND 24259
+  AND p.action = 'DELETE';
+
+-- user041 (SR_INVENTORY_ANALYST): allow flights write, deny inventory delete
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user041'
+  AND p.bit_index BETWEEN 7920 AND 8419
+  AND p.action IN ('POST', 'PUT');
+
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user041'
+  AND p.bit_index BETWEEN 15840 AND 16339
+  AND p.action = 'DELETE';
+
+-- user047 (SR_GDS_ANALYST): allow aircraft read, deny gds write
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user047'
+  AND p.bit_index BETWEEN 0 AND 499
+  AND p.action = 'GET';
+
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user047'
+  AND p.bit_index BETWEEN 11880 AND 12379
+  AND p.action IN ('PUT', 'PATCH');
+
+-- user053 (SR_SALES_EXECUTIVE): allow seatmaps write, deny sales patch
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user053'
+  AND p.bit_index BETWEEN 43560 AND 44059
+  AND p.action IN ('POST', 'PUT');
+
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user053'
+  AND p.bit_index BETWEEN 39600 AND 40099
+  AND p.action = 'PATCH';
+
+-- user063 (RESERVATION_AGENT): allow ssr read, deny pnr write
 INSERT INTO user_allow_permissions (user_id, permission_id)
 SELECT u.id, p.id FROM users u, permissions p
 WHERE u.username = 'user063'
-  AND p.bit_index BETWEEN 47520 AND 48519
+  AND p.bit_index BETWEEN 47520 AND 48019
   AND p.action = 'GET';
 
--- user079 (PAYMENT_PROCESSOR) denied refund capabilities
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user063'
+  AND p.bit_index BETWEEN 31680 AND 32179
+  AND p.action IN ('PUT', 'PATCH');
+
+-- user071 (PRICING_COORDINATOR): allow payments read, deny prices write
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user071'
+  AND p.bit_index BETWEEN 23760 AND 24259
+  AND p.action = 'GET';
+
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user071'
+  AND p.bit_index BETWEEN 35640 AND 36139
+  AND p.action IN ('POST', 'PUT');
+
+-- ---------------------------------------------------------------------------
+-- 5 USERS WITH ONLY ALLOW PERMISSIONS
+-- ---------------------------------------------------------------------------
+
+-- user027 (MGR_GDS_CONTENT): allow pricing read
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user027'
+  AND p.bit_index BETWEEN 35640 AND 36639
+  AND p.action = 'GET';
+
+-- user043 (SR_RESERVATION_AGENT): allow payments read
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user043'
+  AND p.bit_index BETWEEN 23760 AND 24759
+  AND p.action = 'GET';
+
+-- user065 (AIRPORT_AGENT): allow inventory read
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user065'
+  AND p.bit_index BETWEEN 15840 AND 16839
+  AND p.action = 'GET';
+
+-- user073 (SALES_AGENT): allow notifications write
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user073'
+  AND p.bit_index BETWEEN 19800 AND 20799
+  AND p.action IN ('POST', 'PUT');
+
+-- user081 (NOTIFICATION_OPERATOR): allow sales read
+INSERT INTO user_allow_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user081'
+  AND p.bit_index BETWEEN 39600 AND 40599
+  AND p.action = 'GET';
+
+-- ---------------------------------------------------------------------------
+-- 5 USERS WITH ONLY DENY PERMISSIONS
+-- ---------------------------------------------------------------------------
+
+-- user029 (MGR_FLEET): deny aircraft delete
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user029'
+  AND p.bit_index BETWEEN 0 AND 999
+  AND p.action = 'DELETE';
+
+-- user045 (SR_AIRPORT_AGENT): deny pnl write
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user045'
+  AND p.bit_index BETWEEN 27720 AND 28719
+  AND p.action IN ('POST', 'PUT', 'PATCH');
+
+-- user067 (GDS_OPERATOR): deny gds delete
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user067'
+  AND p.bit_index BETWEEN 11880 AND 12879
+  AND p.action = 'DELETE';
+
+-- user075 (SEATMAP_AGENT): deny seatmaps write
+INSERT INTO user_deny_permissions (user_id, permission_id)
+SELECT u.id, p.id FROM users u, permissions p
+WHERE u.username = 'user075'
+  AND p.bit_index BETWEEN 43560 AND 44559
+  AND p.action IN ('PUT', 'PATCH', 'DELETE');
+
+-- user079 (PAYMENT_PROCESSOR): deny payment delete
 INSERT INTO user_deny_permissions (user_id, permission_id)
 SELECT u.id, p.id FROM users u, permissions p
 WHERE u.username = 'user079'

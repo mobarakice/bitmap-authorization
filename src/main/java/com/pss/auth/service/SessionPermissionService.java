@@ -4,20 +4,12 @@ import com.pss.auth.repository.PermissionRepository;
 import com.pss.auth.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
-import org.springframework.scripting.support.ResourceScriptSource;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
-
-import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.IntStream;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -53,7 +45,6 @@ public class SessionPermissionService {
     private final BitmapService bitmapService;
     private final StringRedisTemplate stringRedisTemplate;
 
-    private DefaultRedisScript<Long> computeScript;
     private final AtomicInteger cachedMaxBitIndex = new AtomicInteger(-1);
 
     public void invalidateMaxBitIndexCache() {
@@ -70,25 +61,11 @@ public class SessionPermissionService {
         return current;
     }
 
-    @PostConstruct
-    void init() {
-        computeScript = new DefaultRedisScript<>();
-        computeScript.setScriptSource(
-                new ResourceScriptSource(new ClassPathResource("scripts/compute_user_bitmap.lua"))
-        );
-        computeScript.setResultType(Long.class);
-        log.info("Loaded compute_user_bitmap.lua script");
-    }
-
-    // =========================================================================
-    // LOGIN FLOW
-    // =========================================================================
-
     /**
      * Called during login. Ensures role and user bitmaps exist, extends TTL,
      * and tracks the session.
      */
-    public void onLogin(Long userId, String sessionId, Integer roleId, long ttlSeconds) {
+    public void onLogin(Long userId, String sessionId, Integer roleId, String token, long ttlSeconds) {
         log.info("Processing login permissions for user={}, session={}", userId, sessionId);
 
         // 1. Ensure the role bitmap exists (lazy build if missing)
@@ -98,7 +75,7 @@ public class SessionPermissionService {
         ensureUserBitmap(userId, roleId, ttlSeconds);
 
         // 3. Track this session
-        trackSession(userId, sessionId, ttlSeconds);
+        trackSession(userId, sessionId, token, ttlSeconds);
 
         log.info("Login permissions ready for user={} (TTL={}s)", userId, ttlSeconds);
     }
@@ -296,10 +273,10 @@ public class SessionPermissionService {
      * Track a new session for a user. TTL on the sessions set extends
      * with each login so it persists as long as any session is active.
      */
-    private void trackSession(Long userId, String sessionId, long ttlSeconds) {
+    private void trackSession(Long userId, String sessionId, String token, long ttlSeconds) {
         var key = String.format(USER_SESSIONS_KEY, userId);
-        stringRedisTemplate.opsForSet().add(key, sessionId);
-        stringRedisTemplate.expire(key, ttlSeconds, TimeUnit.SECONDS);
+        stringRedisTemplate.opsForHash().putIfAbsent(key, sessionId, token);
+        stringRedisTemplate.opsForHash().expiration(key, ttlSeconds, TimeUnit.SECONDS);
     }
 
     /**

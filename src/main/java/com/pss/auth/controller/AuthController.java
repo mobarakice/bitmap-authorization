@@ -81,6 +81,7 @@ public class AuthController {
         var token = extractToken(authHeader);
         var claims = jwtService.validateToken(token).getPayload();
         var userId = jwtService.extractUserId(claims);
+        var roleId = jwtService.extractRoleId(claims);
         var sessionId = jwtService.extractSessionId(claims);
 
         if (userId == null || sessionId == null) {
@@ -104,7 +105,7 @@ public class AuthController {
         }
 
         // Check against user-level bitmap (not session-specific)
-        var allowed = sessionPermissionService.checkPermission(userId, permIndex);
+        var allowed = sessionPermissionService.checkPermission(userId, roleId, permIndex);
 
         return ResponseEntity.ok(new PermissionCheckResponse(
                 allowed, request.action(), request.resource(), permIndex
