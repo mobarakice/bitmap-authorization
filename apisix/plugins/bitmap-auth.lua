@@ -198,9 +198,10 @@ function _M.rewrite(conf, ctx)
 
     local uid = jwt_obj.payload.uid
     local sid = jwt_obj.payload.sid
+    local roleId = jwt_obj.payload.roleId
 
-    if not uid or not sid then
-        return 401, { message = "Token missing required claims (uid, sid)" }
+    if not uid or not sid or not roleId then
+        return 401, { message = "Token missing required claims (uid, sid, roleId)" }
     end
 
     -- 3. Normalize path and build permission key
@@ -217,7 +218,6 @@ function _M.rewrite(conf, ctx)
     -- 5. Get permission index
     local perm_id, perm_err = get_permission_index(red, conf, perm_key)
     if not perm_id then
-        -- Permission not registered = deny by default
         core.log.warn("Permission not found for: ", perm_key)
         put_redis(red, conf)
         return 403, { message = "Permission not defined: " .. perm_key }
@@ -228,28 +228,43 @@ function _M.rewrite(conf, ctx)
     local chunk  = math.floor(perm_id / chunk_size)
     local offset = perm_id % chunk_size
 
-    -- 7. GETBIT - the O(1) authorization check
-    local bitmap_key = "{user:" .. uid .. "}:perm:" .. chunk
-    local bit_val, bit_err = red:getbit(bitmap_key, offset)
+    -- 7. Check permission: (role OR allow) AND (NOT deny)
+    local roleKey  = "{user:" .. uid .. "}:role:" .. roleId .. ":perm:" .. chunk
+    local allowKey = "{user:" .. uid .. "}:allow:" .. chunk
+    local denyKey  = "{user:" .. uid .. "}:deny:" .. chunk
 
-    put_redis(red, conf)
-
-    if not bit_val then
-        core.log.error("GETBIT failed: ", bit_err)
-        return 500, { message = "Authorization check failed" }
-    end
-
-    -- 8. Authorize
-    if bit_val == 0 then
-        core.log.info("DENIED: user=", uid, " perm=", perm_key,
-                       " index=", perm_id, " chunk=", chunk, " offset=", offset)
+    -- Check deny first (fast rejection)
+    local denyBit, deny_err = red:getbit(denyKey, offset)
+    if denyBit == 1 then
+        put_redis(red, conf)
+        core.log.info("DENIED (deny list): user=", uid, " perm=", perm_key)
         return 403, { message = "Forbidden" }
     end
 
-    -- ALLOWED - set headers for downstream services
-    core.request.set_header(ctx, "X-User-Id", uid)
-    core.request.set_header(ctx, "X-Session-Id", sid)
-    core.request.set_header(ctx, "X-Perm-Key", perm_key)
+    -- Check role or allow
+    local roleBit, role_err = red:getbit(roleKey, offset)
+    local allowBit, allow_err = red:getbit(allowKey, offset)
+
+    put_redis(red, conf)
+
+    if not roleBit or not allowBit then
+        core.log.error("GETBIT failed")
+        return 500, { message = "Authorization check failed" }
+    end
+
+    -- 8. Authorize: (role OR allow) AND (NOT deny)
+    if roleBit == 1 or allowBit == 1 then
+        -- ALLOWED
+        core.request.set_header(ctx, "X-User-Id", uid)
+        core.request.set_header(ctx, "X-Session-Id", sid)
+        core.request.set_header(ctx, "X-Perm-Key", perm_key)
+        return
+    end
+
+    -- DENIED
+    core.log.info("DENIED: user=", uid, " perm=", perm_key,
+                   " index=", perm_id, " chunk=", chunk, " offset=", offset)
+    return 403, { message = "Forbidden" }
 end
 
 

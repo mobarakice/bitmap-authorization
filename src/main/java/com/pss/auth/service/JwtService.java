@@ -37,9 +37,9 @@ public class JwtService {
     }
 
     /**
-     * Generate a JWT token with userId and sessionId claims.
+     * Generate a JWT token with userId, sessionId, and roleId claims.
      */
-    public String generateToken(Long userId, String sessionId) {
+    public String generateToken(Long userId, String sessionId, Integer roleId) {
         var now = new Date();
         var expiry = new Date(now.getTime() + jwtConfig.expirySeconds() * 1000);
 
@@ -47,7 +47,8 @@ public class JwtService {
                 .subject(String.valueOf(userId))
                 .claims(Map.of(
                         "sid", sessionId,
-                        "uid", userId
+                        "uid", userId,
+                        "roleId", roleId
                 ))
                 .issuedAt(now)
                 .expiration(expiry)
@@ -92,6 +93,14 @@ public class JwtService {
     public String extractSessionId(Claims claims) {
         if (claims == null) return null;
         return claims.get("sid", String.class);
+    }
+
+    /**
+     * Extract role ID from a validated token.
+     */
+    public Integer extractRoleId(Claims claims) {
+        if (claims == null) return null;
+        return claims.get("roleId", Integer.class);
     }
 
     /**

@@ -44,9 +44,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class SessionPermissionService {
 
     private static final String ROLE_PERM_PREFIX = "role:%d:perm";
-    private static final String USER_PERM_PREFIX = "user:%d:perm";
+    private static final String USER_ALLOW_PREFIX = "user:%d:allow";
+    private static final String USER_DENY_PREFIX = "user:%d:deny";
     private static final String USER_SESSIONS_KEY = "user:%d:sessions";
-    private static final String TEMP_PREFIX = "user:%d:tmp:perm:%s";
 
     private final PermissionRepository permissionRepository;
     private final UserRepository userRepository;
@@ -177,31 +177,36 @@ public class SessionPermissionService {
     // =========================================================================
 
     /**
-     * Ensure the user's effective permission bitmap exists.
-     * If it exists, extend its TTL to the latest session expiry.
-     * If missing, compute it: final = (role OR allow) AND (NOT deny).
+     * Ensure the user's allow/deny bitmaps exist in Redis.
+     * OPTIMIZATION: Only creates bitmaps if user has overrides.
      */
     private void ensureUserBitmap(Long userId, Integer roleId, long ttlSeconds) {
-        var prefix = String.format(USER_PERM_PREFIX, userId);
-        var checkKey = bitmapService.buildChunkKey(prefix, 0);
-        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(checkKey))) {
-            // Bitmap exists — just extend TTL
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
+        var allowKey = bitmapService.buildChunkKey(allowPrefix, 0);
+        var denyKey = bitmapService.buildChunkKey(denyPrefix, 0);
+        
+        boolean allowExists = Boolean.TRUE.equals(stringRedisTemplate.hasKey(allowKey));
+        boolean denyExists = Boolean.TRUE.equals(stringRedisTemplate.hasKey(denyKey));
+        
+        if (allowExists || denyExists) {
+            // At least one bitmap exists, extend TTL
             extendUserBitmapTtl(userId, ttlSeconds);
-            log.debug("Extended user bitmap TTL for user={}", userId);
+            log.debug("Extended user allow/deny TTL for user={}", userId);
             return;
         }
-        // Bitmap missing — compute from scratch
-        computeUserBitmap(userId, roleId, ttlSeconds);
+        
+        // No bitmaps exist, build from DB (only if user has overrides)
+        buildUserBitmaps(userId, ttlSeconds);
     }
 
     /**
-     * Compute the user's effective permission bitmap using the Lua script.
-     * Formula: final = (role OR allow) AND (NOT deny)
+     * Build user's allow/deny bitmaps from database.
+     * OPTIMIZATION: Only creates bitmaps if user has overrides.
      */
-    private void computeUserBitmap(Long userId, Integer roleId, long ttlSeconds) {
-        log.info("Computing user bitmap for userId={}", userId);
+    private void buildUserBitmaps(Long userId, long ttlSeconds) {
+        log.info("Building user allow/deny bitmaps for userId={}", userId);
 
-        // Fetch allow/deny from database (parallel via Virtual Threads)
         List<Integer> allowBitIndexes;
         List<Integer> denyBitIndexes;
 
@@ -215,89 +220,71 @@ public class SessionPermissionService {
             throw new RuntimeException("Failed to fetch user permission overrides", e);
         }
 
-        var maxBitIndex = getMaxBitIndex();
-        if (maxBitIndex == 0) {
-            log.warn("No permissions defined in system");
+        // OPTIMIZATION: If user has no overrides, don't create bitmaps
+        if (allowBitIndexes.isEmpty() && denyBitIndexes.isEmpty()) {
+            log.info("User has no permission overrides: userId={}", userId);
             return;
         }
 
-        var totalChunks = bitmapService.getTotalChunks(maxBitIndex);
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
+        var maxBitIndex = getMaxBitIndex();
 
-        // Build temporary allow/deny bitmaps
-        var uniqueId = UUID.randomUUID().toString().substring(0, 8);
-        var tempAllow = String.format(TEMP_PREFIX, userId, "allow:" + uniqueId);
-        var tempDeny = String.format(TEMP_PREFIX, userId, "deny:" + uniqueId);
-        var tempRole = String.format(TEMP_PREFIX, userId, "role:" + uniqueId);
-        var rolePrefix = String.format(ROLE_PERM_PREFIX, roleId);
-        var userPrefix = String.format(USER_PERM_PREFIX, userId);
-
-        bitmapService.buildBitmap(tempAllow, allowBitIndexes);
-        bitmapService.buildBitmap(tempDeny, denyBitIndexes);
-        bitmapService.copyBitmap(rolePrefix, tempRole, totalChunks - 1, 60);
-
-        // Safety TTL — temp keys cleaned up even if Lua script fails
-        bitmapService.setTtl(tempAllow, maxBitIndex, 60);
-        bitmapService.setTtl(tempDeny, maxBitIndex, 60);
-
-        // Build Lua script arguments
-        // KEYS: [roleChunk, allowChunk, denyChunk, resultChunk] × totalChunks
-        // ARGV: [ttl, totalChunks, tmpOrKey0, tmpNotKey0, ...]
-        var keys = new ArrayList<String>();
-        var args = new ArrayList<String>();
-
-        args.add(String.valueOf(ttlSeconds));
-        args.add(String.valueOf(totalChunks));
-
-        IntStream.range(0, totalChunks).forEach(c -> {
-            keys.add(bitmapService.buildChunkKey(tempRole, c));
-            keys.add(bitmapService.buildChunkKey(tempAllow, c));
-            keys.add(bitmapService.buildChunkKey(tempDeny, c));
-            keys.add(bitmapService.buildChunkKey(userPrefix, c));
-
-            args.add(String.format(TEMP_PREFIX, userId, "or:" + uniqueId + ":" + c));
-            args.add(String.format(TEMP_PREFIX, userId, "not:" + uniqueId + ":" + c));
-        });
-
-        try {
-            stringRedisTemplate.execute(computeScript, keys, args.toArray());
-        } finally {
-            // Clean up temp keys regardless of success/failure
-            bitmapService.deleteAll(tempRole, totalChunks - 1);
-            bitmapService.deleteAll(tempAllow, totalChunks - 1);
-            bitmapService.deleteAll(tempDeny, totalChunks - 1);
+        // Build allow bitmap (only if user has allows)
+        if (!allowBitIndexes.isEmpty()) {
+            bitmapService.buildBitmap(allowPrefix, allowBitIndexes);
+            if (maxBitIndex > 0) {
+                bitmapService.setTtl(allowPrefix, maxBitIndex, ttlSeconds);
+            }
+            log.info("Built allow bitmap: userId={}, count={}", userId, allowBitIndexes.size());
         }
 
-        log.info("User bitmap computed: userId={}, chunks={}, TTL={}s", userId, totalChunks, ttlSeconds);
+        // Build deny bitmap (only if user has denies)
+        if (!denyBitIndexes.isEmpty()) {
+            bitmapService.buildBitmap(denyPrefix, denyBitIndexes);
+            if (maxBitIndex > 0) {
+                bitmapService.setTtl(denyPrefix, maxBitIndex, ttlSeconds);
+            }
+            log.info("Built deny bitmap: userId={}, count={}", userId, denyBitIndexes.size());
+        }
     }
 
     /**
-     * Extend the TTL on all user bitmap chunk keys.
-     * Uses pipelined EXPIRE via BitmapService.setTtl().
+     * Extend TTL on user's allow/deny bitmaps (only if they exist).
      */
     private void extendUserBitmapTtl(Long userId, long ttlSeconds) {
-        var prefix = String.format(USER_PERM_PREFIX, userId);
-
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
         var maxBit = getMaxBitIndex();
+        
         if (maxBit > 0) {
-            bitmapService.setTtl(prefix, maxBit, ttlSeconds);
+            var allowKey = bitmapService.buildChunkKey(allowPrefix, 0);
+            var denyKey = bitmapService.buildChunkKey(denyPrefix, 0);
+            
+            if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(allowKey))) {
+                bitmapService.setTtl(allowPrefix, maxBit, ttlSeconds);
+            }
+            if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(denyKey))) {
+                bitmapService.setTtl(denyPrefix, maxBit, ttlSeconds);
+            }
         }
     }
 
     /**
-     * Invalidate a user's permission bitmap and all active sessions.
-     * Called when allow/deny lists change, or when the user's role changes.
+     * Invalidate a user's allow/deny bitmaps and all active sessions.
      */
     public void invalidateUserBitmap(Long userId) {
-        log.info("Invalidating user bitmap for userId={}", userId);
-        var prefix = String.format(USER_PERM_PREFIX, userId);
+        log.info("Invalidating user allow/deny bitmaps for userId={}", userId);
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
 
         var maxBit = getMaxBitIndex();
         if (maxBit > 0) {
             var totalChunks = bitmapService.getTotalChunks(maxBit);
-            bitmapService.deleteAll(prefix, totalChunks);
+            bitmapService.deleteAll(allowPrefix, totalChunks);
+            bitmapService.deleteAll(denyPrefix, totalChunks);
         }
 
-        // Invalidate all active sessions for this user
         invalidateAllSessions(userId);
     }
 
@@ -347,17 +334,23 @@ public class SessionPermissionService {
 
     /**
      * Check if a user has a specific permission.
-     * Reads from the user's effective bitmap (no session ID needed).
+     * Formula: (role OR allow) AND (NOT deny)
      */
-    public boolean checkPermission(Long userId, int bitIndex) {
-        var prefix = String.format(USER_PERM_PREFIX, userId);
-        return bitmapService.getBit(prefix, bitIndex);
-    }
+    public boolean checkPermission(Long userId, Integer roleId, int bitIndex) {
+        var rolePrefix = String.format(ROLE_PERM_PREFIX, roleId);
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
 
-    /**
-     * Get the user permission key prefix for external use (e.g., APISIX).
-     */
-    public String getUserPermKeyPrefix(Long userId) {
-        return String.format(USER_PERM_PREFIX, userId);
+        // Check deny first (fast rejection)
+        boolean denyHas = bitmapService.getBit(denyPrefix, bitIndex);
+        if (denyHas) {
+            return false;  // Explicit deny
+        }
+
+        // Check role or allow
+        boolean roleHas = bitmapService.getBit(rolePrefix, bitIndex);
+        boolean allowHas = bitmapService.getBit(allowPrefix, bitIndex);
+
+        return roleHas || allowHas;
     }
 }

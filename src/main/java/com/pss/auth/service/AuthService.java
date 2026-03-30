@@ -53,7 +53,7 @@ public class AuthService {
 
         // 3. Generate session
         var sessionId = jwtService.generateSessionId();
-        var token = jwtService.generateToken(user.getId(), sessionId);
+        var token = jwtService.generateToken(user.getId(), sessionId, user.getRole().getId());
         var ttl = jwtService.getExpirySeconds();
 
         // 4. Ensure bitmaps + track session (the core operation)
