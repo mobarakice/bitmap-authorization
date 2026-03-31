@@ -35,22 +35,93 @@ if roleBit == 1 or allowBit == 1 then return 1 end
 return 0
 ```
 
-Invoked from the plugin as:
+#### Lua EVAL Script V2 — Full Request Evaluation Inside Redis
+
+V2 consolidates **every** per-request Redis operation — token validation, permission index resolution, chunk math, and all three bitmap checks — into a single server-side `EVAL`. APISIX sends one command; Redis returns the authorization decision.
 
 ```lua
-local result, eval_err = red:eval(
-    CHECK_PERM_SCRIPT, 3,
-    roleKey, allowKey, denyKey,
-    tostring(offset)
-)
+-- KEYS[1] = role key prefix    e.g. {user:1}:role:2:perm:
+-- KEYS[2] = allow key prefix   e.g. {user:1}:allow:
+-- KEYS[3] = deny key prefix    e.g. {user:1}:deny:
+-- KEYS[4] = permission key     e.g. GET:/api/orders/{id}
+-- KEYS[5] = token store key    e.g. user:1:token
+-- ARGV[1] = token hash field   e.g. "sid"
+-- ARGV[2] = token value        (sid from JWT)
+-- ARGV[3] = chunk_size         e.g. "1024"
+-- Returns: 1 (ALLOW), 0 (DENY), -1 (perm not found), -2 (token invalid)
+
+local auth = redis.call('HGET', KEYS[5], ARGV[1])
+if not auth or auth ~= ARGV[2] then return -2 end
+local perm_id = redis.call('HGET', 'perm:index', KEYS[4])
+if not perm_id then return -1 end
+perm_id = tonumber(perm_id)
+local chunk_size = tonumber(ARGV[3])
+local chunk  = tostring(math.floor(perm_id / chunk_size))
+local offset = perm_id % chunk_size
+local denyBit  = redis.call('GETBIT', KEYS[3] .. chunk, offset)
+if denyBit == 1 then return 0 end
+local roleBit  = redis.call('GETBIT', KEYS[1] .. chunk, offset)
+local allowBit = redis.call('GETBIT', KEYS[2] .. chunk, offset)
+if roleBit == 1 or allowBit == 1 then return 1 end
+return 0
 ```
+
+**Server-side commands per call:** `HGET` (token) + `HGET` (perm:index) + up to 3× `GETBIT` = **5 ops**, all executed without leaving Redis.
+
+#### V1 vs V2 Performance Comparison
+
+| Metric | V1 (LRU warm) | V1 (LRU cold) | V2 |
+|---|---|---|---|
+| APISIX → Redis round trips | 1 | 2 | 1 |
+| Redis commands per request | 3 (server-side EVAL) | 1 HGET + 3 EVAL | 5 (server-side EVAL) |
+| EVAL server-side execution | ~3–5 µs | ~3–5 µs | ~10–15 µs |
+| Request latency (LAN Redis) | ~0.20 ms | ~0.45 ms | ~0.25 ms |
+| Redis TPS ceiling (single instance) | ~200 K | ~100 K | ~67 K–100 K |
+| **APISIX TPS per node** | **50 K–100 K** | **20 K–50 K** | **30 K–60 K** |
+| `perm:index` caching | LRU in APISIX (60 s TTL) | LRU miss | None — server-side always |
+| Token validation | HMAC-SHA256 in APISIX | HMAC-SHA256 in APISIX | Redis HGET comparison |
+| Native token revocation | No | No | Yes — delete key |
+
+**TPS ceiling derivation for V2:**
+
+Redis single instance executes scripts serially. At ~10–15 µs per V2 EVAL:
+
+```
+1 s / 12.5 µs (midpoint) = 80 K EVAL/s  →  80 K auth checks/s (Redis bound)
+```
+
+Compare V1 LRU-warm: `1 s / 4 µs = 250 K EVAL/s` — Redis CPU usage is ~3× higher per request in V2.
+
+APISIX worker TPS is not the bottleneck: async I/O means each worker handles thousands of concurrent in-flight requests. Redis throughput is the ceiling at scale.
+
+#### When V2 Wins
+
+- Permission set is large or volatile → LRU hit rate is low → V1 cold path is frequent → V2's single round trip advantage materialises
+- Native token revocation is required without a JWT blacklist
+- Redis is co-located with APISIX (`< 0.1 ms` RTT) — the 1 vs 2 round trip gap widens on higher latency networks
+
+#### When V1 Wins
+
+- Permission set is finite and stable → LRU hit rate is high → V1 warm is faster and uses 3× less Redis CPU
+- Stateless JWT must be preserved (security posture) — V2 requires storing tokens in Redis, making session validity dependent on Redis key integrity
+- High-throughput target (> 60 K TPS) — V2's Redis CPU cost becomes the limiting factor earlier
+
+#### ⚠️ Architectural Trade-off in V2
+
+V2 replaces HMAC-SHA256 JWT signature verification (in-memory, in APISIX) with a Redis `HGET` equality check. This shifts the trust boundary:
+
+- On login, the session token must be written to Redis (`HSET user:{uid}:token sid <value>`)
+- Security now depends on Redis key integrity — a write-access breach to Redis allows forging any session
+- The architecture becomes **stateful**: token revocation is native but the stateless JWT guarantee is lost
+
+V1 keeps JWT verification in APISIX (cryptographic, no Redis dependency); V2 trades that for a single round trip and native revocation.
 
 ### Throughput Estimates
 
 | Scenario | Expected QPS | Bottleneck |
 |---|---|---|
 | LRU warm, single Redis | 50 K–100 K | APISIX worker concurrency |
-| LRU cold, single Redis | 20 K–50 K | `HGET` + 3× `GETBIT` |
+| LRU cold, single Redis | 20 K–50 K | `HGET perm:index` + `EVAL` (3 GETBIT) |
 | With connection pooling | 30 K–80 K | Redis pipeline |
 
 Redis single-instance limits: `GETBIT` ~100 K ops/s per core; `HGET` ~80 K ops/s per core.

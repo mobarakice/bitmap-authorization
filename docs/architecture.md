@@ -2,38 +2,15 @@
 
 ## High-Level Architecture
 
-```mermaid
-graph TB
-    Client[Client Application] -->|HTTP Request + JWT| APISIX[APISIX Gateway]
-    APISIX -->|1. Decode JWT → uid, sid, roleId| APISIX
-    APISIX -->|2. HGET perm:index| Redis[(Redis)]
-    APISIX -->|3a. GETBIT deny bitmap| Redis
-    APISIX -->|3b. GETBIT role bitmap| Redis
-    APISIX -->|3c. GETBIT allow bitmap| Redis
-    APISIX -->|4. Proxy if allowed| SpringBoot[Spring Boot Service]
-    APISIX -->|4. 403 if denied| Client
-
-    SpringBoot -->|Login: Lazy-build bitmaps| Redis
-    SpringBoot -->|Read permissions| PostgreSQL[(PostgreSQL)]
-
-    subgraph "Runtime Path (O(1))"
-        APISIX
-        Redis
-    end
-
-    subgraph "Login Path (Lazy / One-time per role)"
-        SpringBoot
-        PostgreSQL
-    end
-```
+![High-Level Architecture](images/architecture_dagram.png)
 
 ## Login Flow Sequence
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant A as APISIX
-    participant S as Spring Boot
+    participant A as APISIX Gateway
+    participant S as Auth Service
     participant DB as PostgreSQL
     participant R as Redis
 
