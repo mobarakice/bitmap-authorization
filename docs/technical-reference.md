@@ -20,6 +20,7 @@ The three `GETBIT` calls (`deny`, `role`, `allow`) are consolidated into a singl
 
 Canonical source at `src/main/resources/scripts/check_permission.lua`; inlined as `CHECK_PERM_SCRIPT` in `apisix/plugins/bitmap-auth.lua`.
 
+##### Version 1
 ```lua
 -- KEYS[1] = role chunk key   e.g. {user:1}:role:2:perm:0
 -- KEYS[2] = allow chunk key  e.g. {user:1}:allow:0
@@ -30,12 +31,15 @@ Canonical source at `src/main/resources/scripts/check_permission.lua`; inlined a
 local denyBit = redis.call('GETBIT', KEYS[3], tonumber(ARGV[1]))
 if denyBit == 1 then return 0 end
 local roleBit  = redis.call('GETBIT', KEYS[1], tonumber(ARGV[1]))
+if roleBit == 1 then return 1 end
 local allowBit = redis.call('GETBIT', KEYS[2], tonumber(ARGV[1]))
-if roleBit == 1 or allowBit == 1 then return 1 end
+if allowBit == 1 then return 1 end
 return 0
 ```
 
 #### Lua EVAL Script V2 — Full Request Evaluation Inside Redis
+
+> **Proposed -- not implemented.** V1 is the current production script. V2 is documented for comparison.
 
 V2 consolidates **every** per-request Redis operation — token validation, permission index resolution, chunk math, and all three bitmap checks — into a single server-side `EVAL`. APISIX sends one command; Redis returns the authorization decision.
 
@@ -61,9 +65,9 @@ local offset = perm_id % chunk_size
 local denyBit  = redis.call('GETBIT', KEYS[3] .. chunk, offset)
 if denyBit == 1 then return 0 end
 local roleBit  = redis.call('GETBIT', KEYS[1] .. chunk, offset)
+if roleBit == 1 then return 1 end
 local allowBit = redis.call('GETBIT', KEYS[2] .. chunk, offset)
-if roleBit == 1 or allowBit == 1 then return 1 end
-return 0
+if allowBit == 1 then return 1 end return 0
 ```
 
 **Server-side commands per call:** `HGET` (token) + `HGET` (perm:index) + up to 3× `GETBIT` = **5 ops**, all executed without leaving Redis.
@@ -137,6 +141,27 @@ Redis single-instance limits: `GETBIT` ~100 K ops/s per core; `HGET` ~80 K ops/s
 | Redis: EXPIRE on allow/deny | ~0.5 ms | |
 | **Total — first login (role bitmap miss)** | **~15–30 ms** | Role bitmap built + locked |
 | **Total — subsequent logins** | **~5–10 ms** | Role bitmap hit, TTL extend only |
+
+### Admin Operations Overhead
+
+| Operation | Latency | Notes |
+|---|---|---|
+| Role perm add (in-place, N perms) | ~0.1 ms + N×0.05 ms | `EXISTS` + N×`SETBIT` |
+| Role perm remove (in-place, N perms) | ~0.1 ms + N×0.05 ms | `EXISTS` + N×`SETBIT 0` |
+| Role perm full replace | ~5–50 ms | `SCAN + DEL` + cascade all users |
+| User perm change (bitmap rebuild) | ~3–10 ms | `DEL` + parallel DB + pipelined `SETBIT` + `EXPIRE` |
+| User perm change (lazy, no bitmap) | ~0 ms Redis | DB only, Redis deferred to login |
+| User role change | ~2–15 ms | `DEL` bitmaps + sessions + lazy role build |
+| User create (no role) | ~0 ms Redis | DB only |
+
+### In-Place vs Full Invalidation
+
+| Strategy | When Used | Redis Cost | Consistency |
+|---|---|---|---|
+| In-place SETBIT | Role perm add/remove (incremental) | O(N) per permission changed | Immediate on originating instance |
+| Full invalidation (SCAN + DEL) | Role perm full replace | O(chunks) + cascade all users | Lazy rebuild on next login |
+| Conditional rebuild | User perm change (bitmap exists) | O(chunks) delete + O(N) rebuild | Immediate |
+| Lazy (skip) | User perm change (no bitmap) | 0 | Built on next login |
 
 ---
 
@@ -255,7 +280,7 @@ All keys for a given user hash to the same slot, enabling atomic Lua EVAL across
 Role or user permissions change while a session is live. Handled via Pub/Sub on `auth:invalidation`:
 
 - **Lazy** (default): Invalidate bitmap keys; stale JWTs remain valid until expiry but new permission checks fail once the bitmap is gone — GETBIT returns 0 → 403.
-- **Eager** (force reauth): Call `invalidateAllSessions(userId)` which deletes bitmaps + session set; next request returns 403 forcing re-login.
+- **Eager** (force reauth): Call `invalidateAllSessions(userId)` which deletes bitmaps + session hash; next request returns 403 forcing re-login.
 
 ### Token Revocation Before Expiry
 
@@ -263,7 +288,11 @@ Delete `user:{uid}:allow:*`, `user:{uid}:deny:*`, and remove from `user:{uid}:se
 
 ### Multi-Device Login
 
-Each device receives a unique `sessionId` in its JWT. Session membership is tracked in `user:{uid}:sessions` (a Redis SET). Revoking one session (via `SREM`) does not affect others. Bitmaps are per-user, not per-session, so all devices for one user share the same allow/deny state.
+Each device receives a unique `sessionId` in its JWT. Session membership is tracked in `user:{uid}:sessions` (a Redis HASH mapping sessionId -> token). Revoking one session (via `HDEL`) does not affect others. Bitmaps are per-user, not per-session, so all devices for one user share the same allow/deny state.
+
+> **Known bug:** `SessionPermissionService` writes sessions using `opsForHash().putIfAbsent()` (HSET)
+> but validates/removes using `opsForSet().isMember()` / `opsForSet().remove()` (SET operations).
+> These operations are incompatible. The code should consistently use HASH operations throughout.
 
 ### Unregistered API Path
 
@@ -286,7 +315,7 @@ A role with 10 permissions out of 100 K total has only 10 bits set across its bi
 # 2. Start dependencies
 docker compose up -d postgres redis
 
-# 3. Run (Flyway applies V1–V3 migrations automatically)
+# 3. Run (Flyway applies V1–V6 migrations automatically)
 ./gradlew bootRun
 
 # 4. Start APISIX (standalone mode)
@@ -306,7 +335,7 @@ redis-cli --scan --pattern "user:*:sessions"| wc -l
 redis-cli GETBIT "role:2:perm:0"   5   # role grant
 redis-cli GETBIT "user:1:allow:0"  5   # user allow override
 redis-cli GETBIT "user:1:deny:0"   5   # user deny override
-redis-cli SMEMBERS "user:1:sessions"    # active sessions
+redis-cli HGETALL "user:1:sessions"     # active sessions (HASH: sessionId → token)
 
 # Check permission index
 redis-cli HGET perm:index "GET:/api/orders/{id}"

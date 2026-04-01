@@ -2,7 +2,7 @@
 
 ## High-Level Architecture
 
-![High-Level Architecture](images/architecture_dagram.png)
+![High-Level Architecture](images/architecture_diagram.png)
 
 ## Login Flow Sequence
 
@@ -17,7 +17,7 @@ sequenceDiagram
     C->>A: POST /api/auth/login {username, password}
     A->>S: Proxy (bypass auth)
     S->>DB: Find user by username
-    DB-->>S: User (with role_id)
+    DB-->>S: User (with role_id, nullable)
     S->>S: Validate password
     S->>S: Generate sessionId, build JWT {uid, sid, roleId}
 
@@ -34,8 +34,8 @@ sequenceDiagram
     Note over S,R: Tier 2 — User Allow/Deny Bitmaps (TTL = token expiry)
     S->>R: EXISTS user:{uid}:allow:0 / user:{uid}:deny:0
     alt Bitmaps missing
-        S->>DB: SELECT allow bit_indexes WHERE user_id = ? (virtual thread)
-        S->>DB: SELECT deny bit_indexes WHERE user_id = ? (virtual thread)
+        S->>DB: SELECT allow bit_indexes WHERE user_id = ? (thread)
+        S->>DB: SELECT deny bit_indexes WHERE user_id = ? (thread)
         DB-->>S: Allow indexes / Deny indexes
         opt User has allow overrides
             S->>R: SETBIT user:{uid}:allow:{chunk} offset 1 (pipelined)
@@ -51,12 +51,13 @@ sequenceDiagram
     end
 
     Note over S,R: Session Tracking
-    S->>R: SADD user:{uid}:sessions {sessionId}
-    S->>R: EXPIRE user:{uid}:sessions {ttl}
+    S->>R: HSET user:{uid}:sessions {sessionId} {token}
+    S->>R: HEXPIRE user:{uid}:sessions {ttl} NX FIELDS 1 sid
 
     S->>R: HSET perm:index (sync if needed)
+
     S-->>A: JWT {uid, sid, roleId, exp}
-    A-->>C: {access_token, token_type, expires_in}
+    A-->>C: {access_token, token_type, expires_in, userId, username, role}
 ```
 
 ## Authorization Check Flow
@@ -81,96 +82,58 @@ sequenceDiagram
         A->>A: Cache perm_id=16 (TTL=60s)
     end
 
-    A->>A: chunk = floor(16 / 1024) = 0, offset = 16 % 1024 = 16
+    A->>A: chunk = floor(16 / 256) = 0, offset = 16 % 256 = 16
 
     Note over A,R: Step 1 — Deny-first check (fast rejection)
     A->>R: GETBIT user:1:deny:0 16
-    R-->>A: 0
-
-    Note over A,R: Step 2 — Role and Allow check
-    A->>R: GETBIT role:2:perm:0 16
-    R-->>A: 1
-    A->>R: GETBIT user:1:allow:0 16
-    R-->>A: 0
-
-    Note over A: roleBit=1 OR allowBit=0 → ALLOW
-
-    alt (roleBit OR allowBit) = 1
-        A->>C: Proxy to upstream (200) + X-User-Id, X-Session-Id headers
-    else (roleBit OR allowBit) = 0
-        A->>C: 403 Forbidden
+    R-->>A: 0 or 1
+    alt denyBit = 1
+        A-->>C: 403 Forbidden
     end
+
+    Note over A,R: Step 2 — Role permission check
+    A->>R: GETBIT role:2:perm:0 16
+    R-->>A: 0 or 1
+    alt roleBit = 1
+      A->>C: Proxy to upstream (200) + X-User-Id, X-Session-Id headers
+    end
+    Note over A,R: Step 3 — Allow check
+    A->>R: GETBIT user:1:allow:0 16
+    R-->>A: 0 or 1
+    alt allowBit = 1
+        A->>C: Proxy to upstream (200) + X-User-Id, X-Session-Id headers
+    else both zero (roleBit = 1, allowBit = 0) 
+        A-->>C: 403 Forbidden
+    end
+    
 ```
 
 ## Data Model
 
-```mermaid
-erDiagram
-    ROLES ||--o{ USERS : "has many"
-    ROLES ||--o{ ROLE_PERMISSIONS : "has"
-    PERMISSIONS ||--o{ ROLE_PERMISSIONS : "assigned to"
-    USERS ||--o{ USER_ALLOW_PERMISSIONS : "has extra"
-    USERS ||--o{ USER_DENY_PERMISSIONS : "has denied"
-    PERMISSIONS ||--o{ USER_ALLOW_PERMISSIONS : "granted to"
-    PERMISSIONS ||--o{ USER_DENY_PERMISSIONS : "denied from"
+See [Entity Relationships](entity_relationships.md) for the full data model including:
 
-    ROLES {
-        int id PK
-        varchar name UK
-        varchar description
-    }
-
-    USERS {
-        bigint id PK
-        varchar username UK
-        varchar password_hash
-        int role_id FK
-        boolean enabled
-    }
-
-    PERMISSIONS {
-        int id PK
-        varchar resource
-        varchar action
-        int bit_index UK
-        varchar description
-    }
-
-    ROLE_PERMISSIONS {
-        int role_id FK
-        int permission_id FK
-    }
-
-    USER_ALLOW_PERMISSIONS {
-        bigint user_id FK
-        int permission_id FK
-    }
-
-    USER_DENY_PERMISSIONS {
-        bigint user_id FK
-        int permission_id FK
-    }
-```
+- **Enforcement Layer** (implemented) -- roles, users, permissions, allow/deny overrides
+- **Presentation Layer** (planned) -- modules, features, capabilities for frontend UI
 
 ## Redis Key Patterns
 
 | Key Pattern                        | Type          | TTL              | Description                                       |
 |------------------------------------|---------------|------------------|---------------------------------------------------|
 | `perm:index`                       | HASH          | None (permanent) | Maps `METHOD:path` → permission `bit_index`       |
-| `role:{roleId}:perm:{chunk}`       | Binary STRING | None (permanent) | Role permission bitmap, chunk N (1024 bits each)  |
+| `role:{roleId}:perm:{chunk}`       | Binary STRING | None (permanent) | Role permission bitmap, chunk N (256 bits each)  |
 | `user:{uid}:allow:{chunk}`         | Binary STRING | Token expiry     | User extra-grant bitmap; created only if needed   |
 | `user:{uid}:deny:{chunk}`          | Binary STRING | Token expiry     | User deny bitmap; created only if needed          |
-| `user:{uid}:sessions`              | SET           | Token expiry     | Active session IDs for this user                  |
+| `user:{uid}:sessions`              | HASH          | Token expiry     | Maps sessionId -> token for this user             |
 | `lock:role_bitmap:{roleId}`        | STRING        | 30 s             | Distributed build lock; prevents thundering herd  |
 
 ### Chunk Sizing
 
-Bitmaps are split into chunks of `app.bitmap.chunk-size` bits (default: 1024).
+Bitmaps are split into chunks of `app.bitmap.chunk-size` bits (default: 256).
 A permission with `bit_index = N` maps to:
-- key:    `{prefix}:{floor(N / 1024)}`
-- offset: `N % 1024`
+- key:    `{prefix}:{floor(N / 256)}`
+- offset: `N % 256`
 
-With 40 permissions (indexes 0–39) all bits fit in chunk 0. With 2000 permissions, chunks 0 and 1 are used.
+With 256 permissions (indexes 0–255) all bits fit in chunk 0. With 512 permissions, chunks 0 and 1 are used.
 
 ### Cache Invalidation
 
@@ -230,7 +193,17 @@ For bit 3 (admin-only resource):
 
 - **Role bitmaps are permanent.** Built once per role on first login (under a 30 s distributed lock).
   Invalidated only when role-permission mappings change via the admin API.
+  Individual add/remove uses in-place `SETBIT` if bitmap exists; full replace uses invalidation + lazy rebuild.
 - **Allow/deny bitmaps are conditional.** Only created when the user has overrides in the DB.
   Users with no overrides have no allow/deny keys; `GETBIT` on a missing key returns 0 by Redis spec.
 - **TTL is extended on each login** to equal the new token expiry — no bitmap rebuild needed for returning users.
 - **Deny-first** short-circuits evaluation: a denied user never hits the role/allow checks.
+- **Nullable role support.** Users can be created without a role (`role_id = NULL`).
+  Login is rejected with 403 until a role is assigned. No Redis keys are created for role-less users.
+- **Conditional bitmap rebuild.** When user allow/deny permissions change, bitmaps are rebuilt immediately
+  if they exist in Redis (preserving remaining TTL). If absent, rebuild is deferred to next login.
+
+---
+
+> Module/Feature/Capability presentation layer for frontend UI authorization is designed
+> See [Entity Relationships — Presentation Layer](entity_relationships.md#2-presentation-layer-planned).
