@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
  * Cache invalidation service for the two-tier bitmap architecture.
  *
@@ -48,6 +50,58 @@ public class CacheInvalidationService {
         log.info("Published cache invalidation: {}", message);
     }
 
+    /**
+     * Called when individual permissions are ADDED to a role.
+     * In-place SETBIT 1 if bitmap exists + cascade to affected users.
+     */
+    public void onRolePermissionAdd(Integer roleId, List<Integer> bitIndexes) {
+        log.info("Role permission add: roleId={}, bits={}", roleId, bitIndexes.size());
+
+        sessionPermissionService.addRolePermissionBits(roleId, bitIndexes);
+        cascadeInvalidateUsersForRole(roleId);
+
+        var message = "ROLE_UPDATED:" + roleId;
+        stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, message);
+        log.info("Published cache invalidation: {}", message);
+    }
+
+    /**
+     * Called when individual permissions are REMOVED from a role.
+     * In-place SETBIT 0 if bitmap exists + cascade to affected users.
+     */
+    public void onRolePermissionRemove(Integer roleId, List<Integer> bitIndexes) {
+        log.info("Role permission remove: roleId={}, bits={}", roleId, bitIndexes.size());
+
+        sessionPermissionService.removeRolePermissionBits(roleId, bitIndexes);
+        cascadeInvalidateUsersForRole(roleId);
+
+        var message = "ROLE_UPDATED:" + roleId;
+        stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, message);
+        log.info("Published cache invalidation: {}", message);
+    }
+
+    /**
+     * Called when a user's allow/deny permissions change.
+     * Conditionally rebuilds bitmaps if they exist in Redis (preserving TTL).
+     */
+    public void onUserPermissionUpdateWithRebuild(Long userId) {
+        log.info("User permission update with conditional rebuild: userId={}", userId);
+
+        sessionPermissionService.rebuildUserBitmapsIfExist(userId);
+
+        var message = "USER_UPDATED:" + userId;
+        stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, message);
+        log.info("Published cache invalidation: {}", message);
+    }
+
+    private void cascadeInvalidateUsersForRole(Integer roleId) {
+        var userIds = userRepository.findUserIdsByRoleId(roleId);
+        userIds.forEach(uid -> {
+            sessionPermissionService.invalidateUserBitmap(uid);
+        });
+        log.info("Cascade invalidated {} users for roleId={}", userIds.size(), roleId);
+    }
+
     // =========================================================================
     // USER PERMISSION CHANGES
     // =========================================================================
@@ -81,6 +135,32 @@ public class CacheInvalidationService {
         permissionIndexService.syncPermissionIndex();
 
         var message = "PERM_INDEX_REFRESHED";
+        stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, message);
+        log.info("Published cache invalidation: {}", message);
+    }
+
+    // =========================================================================
+    // PRESENTATION LAYER CHANGES
+    // =========================================================================
+
+    /**
+     * Called when capability → permission mappings change.
+     * Clears in-memory capability cache on all instances.
+     */
+    public void onCapabilityUpdate() {
+        log.info("Capability mapping update");
+        var message = "CAPABILITY_UPDATED";
+        stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, message);
+        log.info("Published cache invalidation: {}", message);
+    }
+
+    /**
+     * Called when modules or features change.
+     * Clears in-memory module/feature tree cache on all instances.
+     */
+    public void onModuleUpdate() {
+        log.info("Module/feature structure update");
+        var message = "MODULE_UPDATED";
         stringRedisTemplate.convertAndSend(INVALIDATION_CHANNEL, message);
         log.info("Published cache invalidation: {}", message);
     }

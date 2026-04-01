@@ -8,6 +8,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -266,6 +267,113 @@ public class SessionPermissionService {
     }
 
     // =========================================================================
+    // IN-PLACE ROLE BITMAP OPERATIONS
+    // =========================================================================
+
+    /**
+     * Add permission bits to an existing role bitmap in-place.
+     * If bitmap absent, skip (lazy build on next login will include them).
+     */
+    public void addRolePermissionBits(Integer roleId, List<Integer> bitIndexes) {
+        var prefix = String.format(ROLE_PERM_PREFIX, roleId);
+        var checkKey = bitmapService.buildChunkKey(prefix, 0);
+        if (!Boolean.TRUE.equals(stringRedisTemplate.hasKey(checkKey))) {
+            log.debug("Role bitmap absent for roleId={}, skipping in-place add", roleId);
+            return;
+        }
+
+        bitmapService.buildBitmap(prefix, bitIndexes);
+        log.info("In-place added {} bits to role bitmap: roleId={}", bitIndexes.size(), roleId);
+    }
+
+    /**
+     * Remove permission bits from an existing role bitmap in-place.
+     * If bitmap absent, skip.
+     */
+    public void removeRolePermissionBits(Integer roleId, List<Integer> bitIndexes) {
+        var prefix = String.format(ROLE_PERM_PREFIX, roleId);
+        var checkKey = bitmapService.buildChunkKey(prefix, 0);
+        if (!Boolean.TRUE.equals(stringRedisTemplate.hasKey(checkKey))) {
+            log.debug("Role bitmap absent for roleId={}, skipping in-place remove", roleId);
+            return;
+        }
+
+        bitmapService.clearBits(prefix, bitIndexes);
+        log.info("In-place cleared {} bits from role bitmap: roleId={}", bitIndexes.size(), roleId);
+    }
+
+    // =========================================================================
+    // CONDITIONAL USER BITMAP REBUILD
+    // =========================================================================
+
+    /**
+     * Rebuild user allow/deny bitmaps if they exist in Redis.
+     * Preserves remaining TTL. If absent, skip (lazy build on next login).
+     * Always invalidates sessions.
+     */
+    public void rebuildUserBitmapsIfExist(Long userId) {
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
+        var allowKey = bitmapService.buildChunkKey(allowPrefix, 0);
+        var denyKey = bitmapService.buildChunkKey(denyPrefix, 0);
+
+        boolean allowExists = Boolean.TRUE.equals(stringRedisTemplate.hasKey(allowKey));
+        boolean denyExists = Boolean.TRUE.equals(stringRedisTemplate.hasKey(denyKey));
+
+        if (!allowExists && !denyExists) {
+            log.info("No user bitmaps exist for userId={}, skipping rebuild (lazy on next login)", userId);
+            invalidateAllSessions(userId);
+            return;
+        }
+
+        // Preserve remaining TTL from whichever bitmap exists
+        long ttl = -1;
+        if (allowExists) {
+            ttl = bitmapService.getRemainingTtl(allowPrefix, 0);
+        } else {
+            ttl = bitmapService.getRemainingTtl(denyPrefix, 0);
+        }
+        if (ttl <= 0) {
+            ttl = 3600; // fallback 1h if TTL unavailable
+        }
+
+        // Delete old bitmaps
+        var maxBit = getMaxBitIndex();
+        if (maxBit > 0) {
+            var totalChunks = bitmapService.getTotalChunks(maxBit);
+            bitmapService.deleteAll(allowPrefix, totalChunks);
+            bitmapService.deleteAll(denyPrefix, totalChunks);
+        }
+
+        // Rebuild from DB with virtual threads
+        List<Integer> allowBitIndexes;
+        List<Integer> denyBitIndexes;
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var f1 = executor.submit(() -> permissionRepository.findAllowBitIndexesByUserId(userId));
+            var f2 = executor.submit(() -> permissionRepository.findDenyBitIndexesByUserId(userId));
+            allowBitIndexes = f1.get();
+            denyBitIndexes = f2.get();
+        } catch (Exception e) {
+            log.error("Failed to rebuild user bitmaps for userId={}", userId, e);
+            throw new RuntimeException("Failed to rebuild user bitmaps", e);
+        }
+
+        // Write new bitmaps with preserved TTL
+        if (!allowBitIndexes.isEmpty()) {
+            bitmapService.buildBitmap(allowPrefix, allowBitIndexes);
+            if (maxBit > 0) bitmapService.setTtl(allowPrefix, maxBit, ttl);
+        }
+        if (!denyBitIndexes.isEmpty()) {
+            bitmapService.buildBitmap(denyPrefix, denyBitIndexes);
+            if (maxBit > 0) bitmapService.setTtl(denyPrefix, maxBit, ttl);
+        }
+
+        invalidateAllSessions(userId);
+        log.info("Rebuilt user bitmaps: userId={}, allow={}, deny={}, ttl={}s",
+                userId, allowBitIndexes.size(), denyBitIndexes.size(), ttl);
+    }
+
+    // =========================================================================
     // SESSION TRACKING
     // =========================================================================
 
@@ -308,6 +416,35 @@ public class SessionPermissionService {
     // =========================================================================
     // PERMISSION CHECK
     // =========================================================================
+
+    /**
+     * Batch permission check — evaluates multiple bit indexes in pipelined GETBIT calls.
+     * Returns a map of bitIndex → allowed (true/false).
+     * Reduces round-trips from 3*N to 3 pipelines.
+     */
+    public Map<Integer, Boolean> checkPermissionsBatch(Long userId, Integer roleId, List<Integer> bitIndexes) {
+        if (bitIndexes.isEmpty()) return Map.of();
+
+        var rolePrefix = String.format(ROLE_PERM_PREFIX, roleId);
+        var allowPrefix = String.format(USER_ALLOW_PREFIX, userId);
+        var denyPrefix = String.format(USER_DENY_PREFIX, userId);
+
+        // Pipeline all GETBIT calls for each prefix
+        var denyBits = bitmapService.getBitsBatch(denyPrefix, bitIndexes);
+        var roleBits = bitmapService.getBitsBatch(rolePrefix, bitIndexes);
+        var allowBits = bitmapService.getBitsBatch(allowPrefix, bitIndexes);
+
+        // Apply formula: (role OR allow) AND (NOT deny)
+        var result = new java.util.HashMap<Integer, Boolean>();
+        for (int i = 0; i < bitIndexes.size(); i++) {
+            var idx = bitIndexes.get(i);
+            boolean deny = denyBits.get(i);
+            boolean role = roleBits.get(i);
+            boolean allow = allowBits.get(i);
+            result.put(idx, !deny && (role || allow));
+        }
+        return result;
+    }
 
     /**
      * Check if a user has a specific permission.

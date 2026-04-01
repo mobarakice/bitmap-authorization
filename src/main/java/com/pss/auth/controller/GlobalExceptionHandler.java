@@ -1,7 +1,9 @@
 package com.pss.auth.controller;
 
 import com.pss.auth.exception.AccountDisabledException;
+import com.pss.auth.exception.BusinessRuleException;
 import com.pss.auth.exception.InvalidCredentialsException;
+import com.pss.auth.exception.ResourceNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -26,6 +28,18 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleAccountDisabled(AccountDisabledException ex) {
         log.warn("Disabled account login attempt: {}", ex.getMessage());
         return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleResourceNotFound(ResourceNotFoundException ex) {
+        log.warn("Resource not found: {}", ex.getMessage());
+        return buildResponse(HttpStatus.NOT_FOUND, ex.getMessage());
+    }
+
+    @ExceptionHandler(BusinessRuleException.class)
+    public ResponseEntity<Map<String, Object>> handleBusinessRule(BusinessRuleException ex) {
+        log.warn("Business rule violation: {}", ex.getMessage());
+        return buildResponse(HttpStatus.CONFLICT, ex.getMessage());
     }
 
     @ExceptionHandler(RuntimeException.class)

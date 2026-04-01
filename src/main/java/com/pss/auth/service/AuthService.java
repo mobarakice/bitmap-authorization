@@ -33,6 +33,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final SessionPermissionService sessionPermissionService;
     private final PasswordEncoder passwordEncoder;
+    private final CapabilityService capabilityService;
 
     /**
      * Authenticate user and ensure permission bitmaps are ready.
@@ -44,6 +45,11 @@ public class AuthService {
 
         if (!user.getEnabled()) {
             throw new AccountDisabledException();
+        }
+
+        // 1b. Check role assigned
+        if (user.getRole() == null) {
+            throw new AccountDisabledException("No role assigned. Contact administrator.");
         }
 
         // 2. Validate password
@@ -59,8 +65,11 @@ public class AuthService {
         // 4. Ensure bitmaps + track session (the core operation)
         sessionPermissionService.onLogin(user.getId(), sessionId, user.getRole().getId(), token, ttl);
 
-        log.info("User '{}' logged in successfully (userId={}, sessionId={})",
-                user.getUsername(), user.getId(), sessionId);
+        // 5. Resolve capabilities (presentation layer)
+        var resolved = capabilityService.resolveCapabilities(user.getId(), user.getRole().getId());
+
+        log.info("User '{}' logged in successfully (userId={}, sessionId={}, capabilities={})",
+                user.getUsername(), user.getId(), sessionId, resolved.capabilities().size());
 
         return new LoginResponse(
                 token,
@@ -68,7 +77,9 @@ public class AuthService {
                 ttl,
                 user.getId(),
                 user.getUsername(),
-                user.getRole().getName()
+                user.getRole().getName(),
+                resolved.capabilities(),
+                resolved.modules()
         );
     }
 

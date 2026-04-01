@@ -8,6 +8,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.data.redis.core.HashOperations;
+import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
@@ -22,6 +26,7 @@ import static org.mockito.Mockito.*;
  * Unit tests for SessionPermissionService with separate allow/deny bitmap architecture.
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class SessionPermissionServiceTest {
 
     @Mock
@@ -39,11 +44,23 @@ class SessionPermissionServiceTest {
     @Mock
     private ValueOperations<String, String> valueOperations;
 
+    @Mock
+    private HashOperations<String, Object, Object> hashOperations;
+
+    @Mock
+    private SetOperations<String, String> setOperations;
+
     private SessionPermissionService service;
 
+    @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(stringRedisTemplate.opsForHash()).thenReturn(hashOperations);
+        when(stringRedisTemplate.opsForSet()).thenReturn(setOperations);
+        // Stub buildChunkKey to return expected key format: prefix:chunkId
+        when(bitmapService.buildChunkKey(anyString(), anyInt()))
+                .thenAnswer(inv -> inv.getArgument(0) + ":" + inv.getArgument(1));
         service = new SessionPermissionService(
                 permissionRepository,
                 userRepository,

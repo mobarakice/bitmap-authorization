@@ -30,4 +30,10 @@ public interface PermissionRepository extends JpaRepository<Permission, Integer>
            "JOIN UserDenyPermission udp ON udp.permissionId = p.id " +
            "WHERE udp.userId = :userId")
     List<Integer> findDenyBitIndexesByUserId(Long userId);
+
+    @Query("SELECT COUNT(p) FROM Permission p WHERE p.id IN :ids")
+    long countByIdIn(List<Integer> ids);
+
+    @Query("SELECT p.bitIndex FROM Permission p WHERE p.id IN :ids")
+    List<Integer> findBitIndexesByIds(List<Integer> ids);
 }

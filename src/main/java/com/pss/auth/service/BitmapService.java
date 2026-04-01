@@ -78,6 +78,25 @@ public class BitmapService {
     }
 
     /**
+     * Batch get multiple bits via pipeline. Returns list of booleans in same order as input.
+     */
+    public List<Boolean> getBitsBatch(String keyPrefix, List<Integer> bitIndexes) {
+        if (bitIndexes.isEmpty()) return List.of();
+
+        var results = redisTemplate.executePipelined((RedisCallback<Connection>) connection -> {
+            bitIndexes.forEach(bitIndex -> {
+                var key = buildChunkKey(keyPrefix, getChunkId(bitIndex));
+                connection.stringCommands().getBit(key.getBytes(), getOffset(bitIndex));
+            });
+            return null;
+        });
+
+        return results.stream()
+                .map(r -> Boolean.TRUE.equals(r))
+                .toList();
+    }
+
+    /**
      * Build a bitmap from a list of bit indexes.
      * Sets all corresponding bits across the necessary chunks.
      */
@@ -128,6 +147,41 @@ public class BitmapService {
             redisTemplate.delete(keysToDelete);
             log.debug("Deleted {} chunks for {} via SCAN", keysToDelete.size(), keyPrefix);
         }
+    }
+
+    /**
+     * Clear a single bit in the appropriate chunk (SETBIT to 0).
+     */
+    public void clearBit(String keyPrefix, int bitIndex) {
+        var chunkId = getChunkId(bitIndex);
+        var offset = getOffset(bitIndex);
+        var key = buildChunkKey(keyPrefix, chunkId);
+        redisTemplate.opsForValue().setBit(key, offset, false);
+    }
+
+    /**
+     * Clear multiple bits via pipeline (SETBIT 0 for each).
+     */
+    public void clearBits(String keyPrefix, List<Integer> bitIndexes) {
+        if (bitIndexes.isEmpty()) return;
+
+        redisTemplate.executePipelined((RedisCallback<Connection>) connection -> {
+            bitIndexes.forEach(bitIndex -> {
+                var key = buildChunkKey(keyPrefix, getChunkId(bitIndex));
+                connection.stringCommands().setBit(key.getBytes(), getOffset(bitIndex), false);
+            });
+            return null;
+        });
+        log.debug("Cleared {} bits for {} (pipelined)", bitIndexes.size(), keyPrefix);
+    }
+
+    /**
+     * Get remaining TTL (in seconds) for a chunk key. Returns -1 if no TTL, -2 if key missing.
+     */
+    public long getRemainingTtl(String keyPrefix, int chunkId) {
+        var key = buildChunkKey(keyPrefix, chunkId);
+        var ttl = redisTemplate.getExpire(key, java.util.concurrent.TimeUnit.SECONDS);
+        return ttl != null ? ttl : -2;
     }
 
     /**

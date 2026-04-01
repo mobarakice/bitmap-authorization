@@ -31,8 +31,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
         "logging.level.org.flywaydb=DEBUG",
-        "spring.flyway.enabled=true",
-        "spring.flyway.baseline-on-migrate=true"
+        "logging.level.org.flywaydb.core=DEBUG",
+        "spring.flyway.enabled=true"
     }
 )
 @Testcontainers

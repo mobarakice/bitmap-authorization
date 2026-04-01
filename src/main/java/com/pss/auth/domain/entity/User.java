@@ -32,16 +32,36 @@ public class User {
     @Column(nullable = false, unique = true, length = 100)
     private String username;
 
+    @Column(name = "first_name", length = 100)
+    private String firstName;
+
+    @Column(name = "last_name", length = 100)
+    private String lastName;
+
+    @Column(unique = true, length = 255)
+    private String email;
+
+    @Column(name = "mobile_no", unique = true, length = 20)
+    private String mobileNo;
+
+    @Column(unique = true, length = 50)
+    private String signcode;
+
     @Column(name = "password_hash", nullable = false, length = 255)
     private String passwordHash;
 
     @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "role_id", nullable = false)
+    @JoinColumn(name = "role_id")
     private Role role;
 
     @Column(nullable = false)
-
     private Boolean enabled = true;
+
+    @Column(name = "is_active", nullable = false)
+    private Boolean isActive = true;
+
+    @Column(name = "is_system", nullable = false)
+    private Boolean isSystem = false;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

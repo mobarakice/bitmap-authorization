@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service;
  *   USER_UPDATED:{userId}      → invalidate user bitmap
  *   PERM_INDEX_REFRESHED       → re-sync permission index from DB
  *   FORCE_REAUTH:{userId}      → invalidate user bitmap + sessions
+ *   CAPABILITY_UPDATED         → clear in-memory capability cache
+ *   MODULE_UPDATED             → clear in-memory module/feature tree cache
  */
 @Service
 @RequiredArgsConstructor
@@ -23,6 +25,23 @@ public class CacheInvalidationListener implements MessageListener {
 
     private final SessionPermissionService sessionPermissionService;
     private final PermissionIndexService permissionIndexService;
+
+    private volatile Runnable onCapabilityUpdated;
+    private volatile Runnable onModuleUpdated;
+
+    /**
+     * Register callback for CAPABILITY_UPDATED events (set by CapabilityService).
+     */
+    public void setOnCapabilityUpdated(Runnable callback) {
+        this.onCapabilityUpdated = callback;
+    }
+
+    /**
+     * Register callback for MODULE_UPDATED events (set by CapabilityService).
+     */
+    public void setOnModuleUpdated(Runnable callback) {
+        this.onModuleUpdated = callback;
+    }
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
@@ -49,6 +68,14 @@ public class CacheInvalidationListener implements MessageListener {
                 var userId = Long.parseLong(payload.substring("FORCE_REAUTH:".length()));
                 sessionPermissionService.invalidateUserBitmap(userId);
                 log.info("Processed FORCE_REAUTH for userId={}", userId);
+
+            } else if (payload.equals("CAPABILITY_UPDATED")) {
+                if (onCapabilityUpdated != null) onCapabilityUpdated.run();
+                log.info("Processed CAPABILITY_UPDATED");
+
+            } else if (payload.equals("MODULE_UPDATED")) {
+                if (onModuleUpdated != null) onModuleUpdated.run();
+                log.info("Processed MODULE_UPDATED");
 
             } else {
                 log.warn("Unknown invalidation event: {}", payload);
