@@ -1,8 +1,8 @@
 package com.pss.auth.service;
 
+import com.pss.auth.domain.entity.OverrideType;
 import com.pss.auth.domain.entity.User;
-import com.pss.auth.domain.entity.UserAllowPermission;
-import com.pss.auth.domain.entity.UserDenyPermission;
+import com.pss.auth.domain.entity.UserOverridePermission;
 import com.pss.auth.dto.UserCreateRequest;
 import com.pss.auth.dto.UserPermissionRequest;
 import com.pss.auth.dto.UserResponse;
@@ -11,8 +11,7 @@ import com.pss.auth.exception.BusinessRuleException;
 import com.pss.auth.exception.ResourceNotFoundException;
 import com.pss.auth.repository.PermissionRepository;
 import com.pss.auth.repository.RoleRepository;
-import com.pss.auth.repository.UserAllowPermissionRepository;
-import com.pss.auth.repository.UserDenyPermissionRepository;
+import com.pss.auth.repository.UserOverridePermissionRepository;
 import com.pss.auth.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,8 +31,7 @@ public class UserService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final PermissionRepository permissionRepository;
-    private final UserAllowPermissionRepository userAllowPermissionRepository;
-    private final UserDenyPermissionRepository userDenyPermissionRepository;
+    private final UserOverridePermissionRepository userOverridePermissionRepository;
     private final PasswordEncoder passwordEncoder;
     private final SessionPermissionService sessionPermissionService;
     private final CacheInvalidationService cacheInvalidationService;
@@ -64,7 +62,6 @@ public class UserService {
         user.setMobileNo(request.mobileNo());
         user.setSigncode(generateSigncode());
         user.setRole(null); // no role until explicitly assigned
-        user.setEnabled(true);
         user.setIsActive(true);
         user.setIsSystem(false);
 
@@ -118,8 +115,7 @@ public class UserService {
         // Role change — clear allow/deny overrides (they were relative to old role)
         user.setRole(newRole);
         userRepository.save(user);
-        userAllowPermissionRepository.deleteByUserId(userId);
-        userDenyPermissionRepository.deleteByUserId(userId);
+        userOverridePermissionRepository.deleteByUserId(userId);
 
         // Invalidate user bitmaps + sessions
         sessionPermissionService.invalidateUserBitmap(userId);
@@ -157,13 +153,12 @@ public class UserService {
         }
 
         // Atomic DB replace
-        userAllowPermissionRepository.deleteByUserId(userId);
-        userDenyPermissionRepository.deleteByUserId(userId);
+        userOverridePermissionRepository.deleteByUserId(userId);
 
         request.allowPermissionIds().forEach(permId ->
-                userAllowPermissionRepository.save(new UserAllowPermission(userId, permId, null, null)));
+                userOverridePermissionRepository.save(new UserOverridePermission(userId, permId, OverrideType.ALLOW, null, null)));
         request.denyPermissionIds().forEach(permId ->
-                userDenyPermissionRepository.save(new UserDenyPermission(userId, permId, null, null)));
+                userOverridePermissionRepository.save(new UserOverridePermission(userId, permId, OverrideType.DENY, null, null)));
 
         // Conditional rebuild: if bitmaps exist, rebuild in-place with preserved TTL
         cacheInvalidationService.onUserPermissionUpdateWithRebuild(userId);

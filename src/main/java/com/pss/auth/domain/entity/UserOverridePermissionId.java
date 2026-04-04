@@ -10,7 +10,8 @@ import java.io.Serializable;
 @Getter @Setter
 @NoArgsConstructor @AllArgsConstructor
 @EqualsAndHashCode
-public class UserPermissionId implements Serializable {
+public class UserOverridePermissionId implements Serializable {
     private Long userId;
     private Integer permissionId;
+    private OverrideType overrideType;
 }

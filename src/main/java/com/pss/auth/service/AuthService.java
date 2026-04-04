@@ -2,7 +2,7 @@ package com.pss.auth.service;
 
 import com.pss.auth.dto.LoginRequest;
 import com.pss.auth.dto.LoginResponse;
-import com.pss.auth.exception.AccountDisabledException;
+import com.pss.auth.exception.AccountDeactivatedException;
 import com.pss.auth.exception.InvalidCredentialsException;
 import com.pss.auth.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
@@ -43,13 +43,13 @@ public class AuthService {
         var user = userRepository.findByUsername(request.username())
                 .orElseThrow(InvalidCredentialsException::new);
 
-        if (!user.getEnabled()) {
-            throw new AccountDisabledException();
+        if (!user.getIsActive()) {
+            throw new AccountDeactivatedException();
         }
 
         // 1b. Check role assigned
         if (user.getRole() == null) {
-            throw new AccountDisabledException("No role assigned. Contact administrator.");
+            throw new AccountDeactivatedException("No role assigned. Contact administrator.");
         }
 
         // 2. Validate password

@@ -1,6 +1,6 @@
 package com.pss.auth.controller;
 
-import com.pss.auth.exception.AccountDisabledException;
+import com.pss.auth.exception.AccountDeactivatedException;
 import com.pss.auth.exception.BusinessRuleException;
 import com.pss.auth.exception.InvalidCredentialsException;
 import com.pss.auth.exception.ResourceNotFoundException;
@@ -24,9 +24,9 @@ public class GlobalExceptionHandler {
         return buildResponse(HttpStatus.UNAUTHORIZED, ex.getMessage());
     }
 
-    @ExceptionHandler(AccountDisabledException.class)
-    public ResponseEntity<Map<String, Object>> handleAccountDisabled(AccountDisabledException ex) {
-        log.warn("Disabled account login attempt: {}", ex.getMessage());
+    @ExceptionHandler(AccountDeactivatedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccountDeactivated(AccountDeactivatedException ex) {
+        log.warn("Deactivated account login attempt: {}", ex.getMessage());
         return buildResponse(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 

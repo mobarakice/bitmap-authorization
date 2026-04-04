@@ -22,13 +22,13 @@ public interface PermissionRepository extends JpaRepository<Permission, Integer>
     List<Integer> findBitIndexesByRoleId(Integer roleId);
 
     @Query("SELECT p.bitIndex FROM Permission p " +
-           "JOIN UserAllowPermission uap ON uap.permissionId = p.id " +
-           "WHERE uap.userId = :userId")
+           "JOIN UserOverridePermission uop ON uop.permissionId = p.id " +
+           "WHERE uop.userId = :userId AND uop.overrideType = com.pss.auth.domain.entity.OverrideType.ALLOW")
     List<Integer> findAllowBitIndexesByUserId(Long userId);
 
     @Query("SELECT p.bitIndex FROM Permission p " +
-           "JOIN UserDenyPermission udp ON udp.permissionId = p.id " +
-           "WHERE udp.userId = :userId")
+           "JOIN UserOverridePermission uop ON uop.permissionId = p.id " +
+           "WHERE uop.userId = :userId AND uop.overrideType = com.pss.auth.domain.entity.OverrideType.DENY")
     List<Integer> findDenyBitIndexesByUserId(Long userId);
 
     @Query("SELECT COUNT(p) FROM Permission p WHERE p.id IN :ids")
