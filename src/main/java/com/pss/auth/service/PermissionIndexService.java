@@ -10,15 +10,16 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.StringJoiner;
 
 /**
  * Manages the global permission → bit_index mapping in Redis.
- * 
+ * <p>
  * Redis key: "perm:index" (HASH)
- *   field: "GET:/users" → value: "0"
- *   field: "POST:/users" → value: "1"
- *   ...
- * 
+ * field: "GET:/users" → value: "0"
+ * field: "POST:/users" → value: "1"
+ * ...
+ * <p>
  * This hash is loaded on application startup and can be refreshed
  * when permissions are added/modified.
  */
@@ -73,13 +74,14 @@ public class PermissionIndexService {
      * Returns null if the permission is not indexed.
      */
     public Integer getPermissionIndex(String action, String resource) {
-        var key = new java.util.StringJoiner(":").add(action).add(resource).toString();
+        var key = new StringJoiner(":").add(action).add(resource).toString();
         var value = stringRedisTemplate.opsForHash().get(PERM_INDEX_KEY, key);
-        if (value == null) {
+        if (value instanceof String bit) {
             log.debug("Permission index not found for: {}", key);
-            return null;
+            return Integer.parseInt(bit);
         }
-        return Integer.parseInt(value.toString());
+        return permissionRepository.findByResourceAndAction(resource, action).map(Permission::getBitIndex).orElse(null);
+
     }
 
     /**

@@ -1,10 +1,9 @@
 package com.pss.auth.service;
 
 import com.pss.auth.config.JwtConfig;
-import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
-import io.jsonwebtoken.JwtException;
+import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -68,15 +67,10 @@ public class JwtService {
      * Returns null if token is invalid/expired.
      */
     public Jws<Claims> validateToken(String token) {
-        try {
-            return Jwts.parser()
-                    .verifyWith(signingKey)
-                    .build()
-                    .parseSignedClaims(token);
-        } catch (JwtException | IllegalArgumentException e) {
-            log.warn("JWT validation failed: {}", e.getMessage());
-            return null;
-        }
+        return Jwts.parser()
+                .verifyWith(signingKey)
+                .build()
+                .parseSignedClaims(token);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.pss.auth.service;
 
 import lombok.RequiredArgsConstructor;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
@@ -26,22 +27,18 @@ public class CacheInvalidationListener implements MessageListener {
     private final SessionPermissionService sessionPermissionService;
     private final PermissionIndexService permissionIndexService;
 
+    /**
+     * -- SETTER --
+     *  Register callback for CAPABILITY_UPDATED events (set by CapabilityService).
+     */
+    @Setter
     private volatile Runnable onCapabilityUpdated;
+    /**
+     * -- SETTER --
+     *  Register callback for MODULE_UPDATED events (set by CapabilityService).
+     */
+    @Setter
     private volatile Runnable onModuleUpdated;
-
-    /**
-     * Register callback for CAPABILITY_UPDATED events (set by CapabilityService).
-     */
-    public void setOnCapabilityUpdated(Runnable callback) {
-        this.onCapabilityUpdated = callback;
-    }
-
-    /**
-     * Register callback for MODULE_UPDATED events (set by CapabilityService).
-     */
-    public void setOnModuleUpdated(Runnable callback) {
-        this.onModuleUpdated = callback;
-    }
 
     @Override
     public void onMessage(Message message, byte[] pattern) {

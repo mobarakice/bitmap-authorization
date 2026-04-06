@@ -4,6 +4,8 @@ import com.pss.auth.exception.AccountDeactivatedException;
 import com.pss.auth.exception.BusinessRuleException;
 import com.pss.auth.exception.InvalidCredentialsException;
 import com.pss.auth.exception.ResourceNotFoundException;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -17,6 +19,16 @@ import java.util.Map;
 @RestControllerAdvice
 @Slf4j
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ExpiredJwtException.class)
+    public ResponseEntity<?> handleExpired(ExpiredJwtException ex) {
+        return buildResponse(HttpStatus.UNAUTHORIZED, ex.getMessage());
+    }
+
+    @ExceptionHandler(JwtException.class)
+    public ResponseEntity<?> handleInvalid(JwtException ex) {
+        return buildResponse(HttpStatus.UNAUTHORIZED, ex.getMessage());
+    }
 
     @ExceptionHandler(InvalidCredentialsException.class)
     public ResponseEntity<Map<String, Object>> handleInvalidCredentials(InvalidCredentialsException ex) {

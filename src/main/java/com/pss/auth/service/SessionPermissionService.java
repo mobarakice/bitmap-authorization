@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -384,7 +385,7 @@ public class SessionPermissionService {
     private void trackSession(Long userId, String sessionId, String token, long ttlSeconds) {
         var key = String.format(USER_SESSIONS_KEY, userId);
         stringRedisTemplate.opsForHash().putIfAbsent(key, sessionId, token);
-        stringRedisTemplate.opsForHash().expiration(key, ttlSeconds, TimeUnit.SECONDS);
+        stringRedisTemplate.opsForHash().expire(key, Duration.ofSeconds(ttlSeconds), List.of(sessionId));
     }
 
     /**

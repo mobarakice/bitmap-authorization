@@ -8,22 +8,22 @@ import com.pss.auth.service.AuthService;
 import com.pss.auth.service.JwtService;
 import com.pss.auth.service.PermissionIndexService;
 import com.pss.auth.service.SessionPermissionService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
-
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -85,31 +85,24 @@ public class AuthController {
         var sessionId = jwtService.extractSessionId(claims);
 
         if (userId == null || sessionId == null) {
-            return ResponseEntity.status(401).build();
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-
-//        // Verify session is still tracked (not invalidated)
-//        if (!sessionPermissionService.isSessionValid(userId, sessionId)) {
-//            return ResponseEntity.status(401).body(new PermissionCheckResponse(
-//                    false, request.action(), request.resource(), null
-//            ));
-//        }
 
         var permIndex = permissionIndexService.getPermissionIndex(
                 request.action(), request.resource());
 
+        var body = new PermissionCheckResponse(false, request.action(), request.resource(), null);
         if (permIndex == null) {
-            return ResponseEntity.ok(new PermissionCheckResponse(
-                    false, request.action(), request.resource(), null
-            ));
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
         }
 
         // Check against user-level bitmap (not session-specific)
         var allowed = sessionPermissionService.checkPermission(userId, roleId, permIndex);
+        if (!allowed) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+        }
 
-        return ResponseEntity.ok(new PermissionCheckResponse(
-                allowed, request.action(), request.resource(), permIndex
-        ));
+        return ResponseEntity.ok(new PermissionCheckResponse(true, request.action(), request.resource(), permIndex));
     }
 
     /**
