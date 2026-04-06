@@ -2,25 +2,26 @@
 
 This document is the **single source of truth** for all entity relationships in the auth system.
 
-- **Section 1** — Enforcement Layer: the bitmap RBAC system (implemented, enforced at gateway)
-- **Section 2** — Presentation Layer: modules, features, capabilities for frontend UI (planned)
+- **Section 1** — Enforcement Layer: core entities (users, roles, permissions) and bitmap enforcement at gateway
+- **Section 2** — Capability Layer: modules, features, capabilities — the assignment and presentation abstraction (planned)
 
 ---
 
-## 1. Enforcement Layer (Implemented)
-
-The bitmap permission system is the **security boundary**. It is enforced at every HTTP request
-by the APISIX plugin (`bitmap-auth.lua`) and backed by Redis bitmaps built at login time.
-
-### ER Diagram
+## ER Diagram (Unified)
 
 ```mermaid
 erDiagram
     ROLES |o--o{ USERS : "one to one (nullable)"
-    ROLES ||--o{ ROLE_PERMISSIONS : "has"
-    PERMISSIONS ||--o{ ROLE_PERMISSIONS : "assigned to"
-    USERS ||--o{ USER_OVERRIDE_PERMISSIONS : "allow and deny list"
-    PERMISSIONS ||--o{ USER_OVERRIDE_PERMISSIONS : "allow to/deny from"
+    ROLES ||--o{ ROLE_CAPABILITIES : "has"
+    CAPABILITIES ||--o{ ROLE_CAPABILITIES : "assigned to"
+    USERS ||--o{ USER_OVERRIDE_CAPABILITIES : "allow/deny"
+    CAPABILITIES ||--o{ USER_OVERRIDE_CAPABILITIES : "allow/deny"
+    CAPABILITIES ||--o{ CAPABILITY_PERMISSIONS : "maps to"
+    PERMISSIONS ||--o{ CAPABILITY_PERMISSIONS : "mapped by"
+    MODULES ||--o{ MODULES : "parent (self-ref)"
+    MODULES ||--o{ MODULE_FEATURES : "has many"
+    MODULE_FEATURES ||--o{ CAPABILITIES : "has many"
+
     ROLES {
         int id PK
         varchar name UK
@@ -51,33 +52,71 @@ erDiagram
         varchar description "NULLABLE"
     }
 
-    ROLE_PERMISSIONS {
+    MODULES {
+        int id PK
+        varchar code UK "e.g. DCS, PRICING, INVENTORY"
+        varchar name "Display name, e.g. Departure Control System"
+        int parent_id FK "NULL = root module"
+        int sort_order "Menu ordering"
+        boolean is_active "Feature flag"
+    }
+
+    MODULE_FEATURES {
+        int id PK
+        varchar code UK "e.g. FLIGHT, BOOKING, CHECKING"
+        varchar name "Flight management system"
+        int module_id FK "Belongs to module"
+        int sort_order "Feature ordering within module"
+        boolean is_active "Feature flag"
+    }
+
+    CAPABILITIES {
+        int id PK
+        varchar code UK "e.g. FLIGHT_VIEW, BOOKING_VIEW"
+        varchar name "View Flight List"
+        int feature_id FK "Belongs to feature"
+        varchar description "NULLABLE"
+    }
+
+    CAPABILITY_PERMISSIONS {
+        int capability_id FK
+        int permission_id FK
+    }
+
+    ROLE_CAPABILITIES {
+        int capability_id FK
         int role_id FK
-        int permission_id FK
     }
 
-    USER_OVERRIDE_PERMISSIONS {
-        bigint user_id FK
-        int permission_id FK
-        varchar override_type "enum string [ALLOW, DENY]"
+    USER_OVERRIDE_CAPABILITIES {
+        int capability_id FK
+        int user_id FK
+        varchar override_type "enum [ALLOW, DENY]"
     }
 ```
 
-### Permission Formula
+## 1. Enforcement Layer (Implemented)
+
+The bitmap permission system is the **security boundary**. It is enforced at every HTTP request
+by the APISIX plugin (`bitmap-auth.lua`) and backed by Redis bitmaps built at login time.
+
+### Bitmap Formula
 
 ```
-result = (role OR allow) AND (NOT deny)
+effective_capabilities = (role_capabilities OR allow_overrides) AND (NOT deny_overrides)
+bitmap = union of all bit_indexes from effective_capabilities' permissions
 ```
 
-- **Role permissions** — shared by all users in the role, stored as permanent Redis bitmaps
-- **Allow overrides** — per-user extra grants beyond the role, TTL-scoped
-- **Deny overrides** — per-user revocations from the role, TTL-scoped (deny always wins)
+- **Role capabilities** — assigned via `ROLE_CAPABILITIES` (see Section 2), resolved to permissions at login
+- **Allow overrides** — per-user extra capability grants beyond the role, via `USER_OVERRIDE_CAPABILITIES`
+- **Deny overrides** — per-user capability revocations, via `USER_OVERRIDE_CAPABILITIES` (deny always wins)
+- The resulting bitmap is written to Redis and enforced by the APISIX plugin at every HTTP request
 
 Users can exist without a role (`role_id = NULL`). Login is rejected with 403 until a role is assigned.
 
 ---
 
-## 2. Presentation Layer (Planned)
+## 2. Capability Layer (Planned)
 
 ### Overview
 
@@ -117,54 +156,6 @@ Capabilities are the **frontend-facing contract** -- stable business identifiers
 │  bit_index  = position in Redis bitmap                       │
 │  Enforced by APISIX plugin + Spring Boot                     │
 └──────────────────────────────────────────────────────────────┘
-```
-
-### ER Diagram
-
-```mermaid
-erDiagram
-    MODULES ||--o{ MODULES: "parent (self-ref)"
-    MODULES ||--o{ MODULE_FEATURES: "has many"
-    MODULE_FEATURES ||--o{ CAPABILITIES: "has many"
-    CAPABILITIES ||--o{ CAPABILITY_PERMISSIONS: "maps to"
-    PERMISSIONS ||--o{ CAPABILITY_PERMISSIONS: "mapped by"
-    ROLES ||--o{ ROLE_PERMISSIONS: "has"
-    ROLES |o--o{ USERS: "has many"
-    PERMISSIONS ||--o{ ROLE_PERMISSIONS: "assigned to"
-    USERS ||--o{ USER_OVERRIDE_PERMISSIONS: "allow/deny"
-    PERMISSIONS ||--o{ USER_OVERRIDE_PERMISSIONS: "allow/deny"
-
-    MODULES {
-        int id PK
-        varchar code UK "e.g. DCS, PRICING, INVENTORY"
-        varchar name "Display name, e.g. Departure Control System"
-        int parent_id FK "NULL = root module"
-        int sort_order "Menu ordering"
-        boolean is_active "Feature flag"
-    }
-
-    MODULE_FEATURES {
-        int id PK
-        varchar code UK "e.g. FLIGHT, BOOKING, CHECKING"
-        varchar name "Flight management system"
-        int module_id FK "Belongs to module"
-        int sort_order "Feature ordering within module"
-        boolean is_active "Feature flag"
-    }
-
-    CAPABILITIES {
-        int id PK
-        varchar code UK "e.g. FLIGHT_VIEW, BOOKING_VIEW"
-        varchar name "View Flight List"
-        int feature_id FK "Belongs to feature"
-        varchar description "NULLABLE"
-    }
-
-    CAPABILITY_PERMISSIONS {
-        int capability_id FK
-        int permission_id FK
-    }
-
 ```
 
 ### Four-Level Hierarchy
@@ -307,23 +298,33 @@ and returned in the `LoginResponse` for the frontend to consume.
 
 ```
 Input:  userId, roleId
-Output: List<String> capabilities (codes), module/feature tree
+Output: List<String> capabilities (codes), module/feature tree, bitmap
 
-1. Load capability -> permission bit_index mappings (in-memory cache):
-   SELECT c.id, c.code, c.feature_id, p.bit_index
-   FROM capabilities c
-   JOIN capability_permissions cp ON cp.capability_id = c.id
-   JOIN permissions p ON p.id = cp.permission_id
+1. Resolve effective capabilities:
+   a. Load role capabilities:
+      SELECT c.id, c.code FROM capabilities c
+      JOIN role_capabilities rc ON rc.capability_id = c.id
+      WHERE rc.role_id = :roleId
 
-2. For each capability:
-   - Get all its permission bit_indexes
-   - For EACH bit_index, evaluate: (role OR allow) AND (NOT deny)
-   - Capability is GRANTED if ALL its permissions are granted
+   b. Load user overrides:
+      SELECT capability_id, override_type FROM user_override_capabilities
+      WHERE user_id = :userId
+
+   c. Apply formula:  effective = (role_capabilities OR allow) AND (NOT deny)
+
+2. Build bitmap from effective capabilities:
+   - Load capability -> permission bit_index mappings (in-memory cache):
+     SELECT c.id, c.code, c.feature_id, p.bit_index
+     FROM capabilities c
+     JOIN capability_permissions cp ON cp.capability_id = c.id
+     JOIN permissions p ON p.id = cp.permission_id
+   - Union all bit_indexes from effective capabilities into the bitmap
+   - Write bitmap to Redis for gateway enforcement
 
 3. Build module -> feature -> capability tree:
    - Load modules + features (in-memory cache)
-   - Attach granted capabilities to their features
-   - Filter out features with zero granted capabilities
+   - Attach effective capabilities to their features
+   - Filter out features with zero effective capabilities
    - Filter out modules with zero features (after filtering)
    - Preserve parent module hierarchy
 
@@ -435,7 +436,7 @@ Invalidation piggybacks on the existing Pub/Sub system:
 | Event | Pub/Sub Message | Cache Effect |
 |---|---|---|
 | Permission added/removed | `PERM_INDEX_REFRESHED` | Clear capability->permission cache |
-| Role permissions changed | `ROLE_UPDATED:{roleId}` | (no capability cache effect -- resolved per-login) |
+| Role capabilities changed | `ROLE_UPDATED:{roleId}` | (no capability cache effect -- resolved per-login) |
 | Capability mapping changed | `CAPABILITY_UPDATED` (new) | Clear capability->permission cache |
 | Feature changed | `MODULE_UPDATED` (new) | Clear module/feature tree cache |
 | Module changed | `MODULE_UPDATED` (new) | Clear module/feature tree cache |
