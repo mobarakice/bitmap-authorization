@@ -36,12 +36,15 @@ public class AuthController {
     private final JwtService jwtService;
     private final PermissionIndexService permissionIndexService;
     private final SessionPermissionService sessionPermissionService;
+    private final String PREFIX_PUBLIC = "/__public";
+    private final String SECURED_BASE_PATH = "/api/auth";
+    private final String PUBLIC_BASE_PATH = PREFIX_PUBLIC + SECURED_BASE_PATH;
 
     /**
      * POST /api/auth/login
      * Authenticates user, ensures permission bitmaps, returns JWT.
      */
-    @PostMapping("/login")
+    @PostMapping(PUBLIC_BASE_PATH + "/login")
     @Operation(summary = "Login", description = "Authenticates user and returns a JWT token.")
     @ApiResponse(responseCode = "200", description = "Successful authentication")
     @ApiResponse(responseCode = "401", description = "Invalid credentials")
@@ -54,7 +57,7 @@ public class AuthController {
      * POST /api/auth/logout
      * Removes the session from tracking.
      */
-    @PostMapping("/logout")
+    @PostMapping(SECURED_BASE_PATH + "/logout")
     @Operation(summary = "Logout", description = "Removes the user session from Redis.")
     @ApiResponse(responseCode = "200", description = "Logged out successfully")
     public ResponseEntity<Map<String, String>> logout(
@@ -70,7 +73,7 @@ public class AuthController {
      * Checks the user-level bitmap (no session-specific bitmap needed).
      * Also validates that the session is still active.
      */
-    @PostMapping("/check")
+    @PostMapping(SECURED_BASE_PATH + "/check")
     @Operation(summary = "Check Permission", description = "Verifies if the session is valid and the user has the requested permission.")
     @ApiResponse(responseCode = "200", description = "Permission check completed")
     @ApiResponse(responseCode = "401", description = "Invalid session or missing token")
@@ -109,7 +112,7 @@ public class AuthController {
      * GET /api/auth/me
      * Returns information about the authenticated user.
      */
-    @GetMapping("/me")
+    @GetMapping(SECURED_BASE_PATH + "/me")
     @Operation(summary = "Get Current User", description = "Returns information about the authenticated user and session validity.")
     @ApiResponse(responseCode = "200", description = "User information returned")
     @ApiResponse(responseCode = "401", description = "Invalid token")
